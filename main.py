@@ -47,6 +47,7 @@ def parse_args():
                         help='Directory name to save training logs')
     parser.add_argument('--sample_dir', type=str, default='samples',
                         help='Directory name to save the samples on training')
+    parser.add_argument("--gpus", default="-1", help="Choose which gpu to use(eg. -1)")
 
     return check_args(parser.parse_args())
 
@@ -84,8 +85,13 @@ def main():
     if args is None:
       exit()
 
+    session_config = tf.ConfigProto(
+        allow_soft_placement=True, 
+        log_device_placement=False)
+    session_config.gpu_options.visible_device_list = args.gpus
+    session_config.gpu_options.allow_growth = True
     # open session
-    with tf.Session(config=tf.ConfigProto(allow_soft_placement=True)) as sess:
+    with tf.Session(config=session_config) as sess:
         gan = UGATIT(sess, args)
 
         # build graph

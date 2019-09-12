@@ -101,13 +101,15 @@ class UGATIT(object) :
     ##################################################################################
 
     def generator(self, x_init, reuse=False, scope="generator"):
-        channel = self.ch
+        channel = self.ch # 起始的卷积核个数，默认为64
+        # 输入图像大小应该为256*256
         with tf.variable_scope(scope, reuse=reuse) :
             x = conv(x_init, channel, kernel=7, stride=1, pad=3, pad_type='reflect', scope='conv')
             x = instance_norm(x, scope='ins_norm')
             x = relu(x)
 
-            # Down-Sampling
+            # Down-Sampling，将图像的H和W变为原始的1/4
+            # 经过降采样，图像的尺寸变为：batch_size, 64, 64, 128
             for i in range(2) :
                 x = conv(x, channel*2, kernel=3, stride=2, pad=1, pad_type='reflect', scope='conv_'+str(i))
                 x = instance_norm(x, scope='ins_norm_'+str(i))
@@ -115,7 +117,8 @@ class UGATIT(object) :
 
                 channel = channel * 2
 
-            # Down-Sampling Bottleneck
+            # Down-Sampling Bottleneck，这里图像没有进一步降采样
+            # 属于简单的resnet模块堆积
             for i in range(self.n_res):
                 x = resblock(x, channel, scope='resblock_' + str(i))
 
@@ -142,10 +145,13 @@ class UGATIT(object) :
             gamma, beta = self.MLP(x, reuse=reuse)
 
             # Up-Sampling Bottleneck
+            # 上采样的resnet模块，用到Adaptive Instance Normalization
+            # 这里每一个AdaIns使用相同的gamma与beta
             for i in range(self.n_res):
                 x = adaptive_ins_layer_resblock(x, channel, gamma, beta, smoothing=self.smoothing, scope='adaptive_resblock' + str(i))
 
             # Up-Sampling
+            # 继续上采样，依然使用Instance Norm
             for i in range(2) :
                 x = up_sample(x, scale_factor=2)
                 x = conv(x, channel//2, kernel=3, stride=1, pad=1, pad_type='reflect', scope='up_conv_'+str(i))
@@ -154,7 +160,7 @@ class UGATIT(object) :
 
                 channel = channel // 2
 
-
+            # 好像通常进行回归计算，要么使用sigmoid，要么使用tanh
             x = conv(x, channels=3, kernel=7, stride=1, pad=3, pad_type='reflect', scope='G_logit')
             x = tanh(x)
 
@@ -363,15 +369,17 @@ class UGATIT(object) :
             self.domain_B = trainB_iterator.get_next()
 
             """ Define Generator, Discriminator """
+            # 第一步，先将real_a送入生成器，生成仿照b风格的图片
             x_ab, cam_ab = self.generate_a2b(self.domain_A) # real a
             x_ba, cam_ba = self.generate_b2a(self.domain_B) # real b
-
+            # 奇怪....所有生成的heatmap貌似都没有使用
             x_aba, _ = self.generate_b2a(x_ab, reuse=True) # real b
             x_bab, _ = self.generate_a2b(x_ba, reuse=True) # real a
 
             x_aa, cam_aa = self.generate_b2a(self.domain_A, reuse=True) # fake b
             x_bb, cam_bb = self.generate_a2b(self.domain_B, reuse=True) # fake a
 
+            # 同样，在鉴别器中，heatmap并没有使用，不知道这里为什么会有heatmap
             real_A_logit, real_A_cam_logit, real_B_logit, real_B_cam_logit = self.discriminate_real(self.domain_A, self.domain_B)
             fake_A_logit, fake_A_cam_logit, fake_B_logit, fake_B_cam_logit = self.discriminate_fake(x_ba, x_ab)
 
@@ -599,7 +607,7 @@ class UGATIT(object) :
     def load(self, checkpoint_dir):
         print(" [*] Reading checkpoints...")
         checkpoint_dir = os.path.join(checkpoint_dir, self.model_dir)
-
+        
         ckpt = tf.train.get_checkpoint_state(checkpoint_dir)
         if ckpt and ckpt.model_checkpoint_path:
             ckpt_name = os.path.basename(ckpt.model_checkpoint_path)
@@ -608,7 +616,7 @@ class UGATIT(object) :
             print(" [*] Success to read {}".format(ckpt_name))
             return True, counter
         else:
-            print(" [*] Failed to find a checkpoint")
+            print(" [*] Failed to find a checkpoint in {}".format(checkpoint_dir))
             return False, 0
 
     def test(self):
