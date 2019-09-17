@@ -127,12 +127,12 @@ def adaptive_ins_layer_resblock(x_init, channels, gamma, beta, use_bias=True, sm
     with tf.variable_scope(scope):
         with tf.variable_scope('res1'):
             x = conv(x_init, channels, kernel=3, stride=1, pad=1, pad_type='reflect', use_bias=use_bias)
-            x = adaptive_instance_layer_norm(x, gamma, beta, smoothing)
+            x = adaptive_instance_layer_norm(x, gamma[0], beta[0], smoothing)
             x = relu(x)
 
         with tf.variable_scope('res2'):
             x = conv(x, channels, kernel=3, stride=1, pad=1, pad_type='reflect', use_bias=use_bias)
-            x = adaptive_instance_layer_norm(x, gamma, beta, smoothing)
+            x = adaptive_instance_layer_norm(x, gamma[1], beta[1], smoothing)
 
         return x + x_init
 

@@ -104,7 +104,7 @@ class UGATIT(object) :
         channel = self.ch # 起始的卷积核个数，默认为64
         # 输入图像大小应该为256*256
         with tf.variable_scope(scope, reuse=reuse) :
-            x = conv(x_init, channel, kernel=7, stride=2, pad=3, pad_type='reflect', scope='conv')
+            x = conv(x_init, channel, kernel=7, stride=1, pad=3, pad_type='reflect', scope='conv')
             x = instance_norm(x, scope='ins_norm')
             x = relu(x)
 
@@ -143,36 +143,49 @@ class UGATIT(object) :
             heatmap = tf.squeeze(tf.reduce_sum(x, axis=-1))
 
             # Gamma, Beta block
-            gamma, beta = self.MLP(x, reuse=reuse)
+            gamma, beta = self.MLP(x, channel*self.n_res*2 + (channel // 2) + (channel // 4), 
+                                   reuse=reuse)
+            # 对gamma和beta进行切分
+            num_or_size_splits = [channel] * (self.n_res*2)
+            num_or_size_splits.extend([channel // 2, channel // 4])
+            gamma = tf.split(value=gamma, axis=-1, num_or_size_splits=num_or_size_splits)
+            beta = tf.split(value=beta, axis=-1, num_or_size_splits=num_or_size_splits)
 
             # Up-Sampling Bottleneck
             # 上采样的resnet模块，用到Adaptive Instance Normalization
             # 这里每一个AdaIns使用相同的gamma与beta
             for i in range(self.n_res):
-                x = adaptive_ins_layer_resblock(x, channel, gamma, beta, smoothing=self.smoothing, scope='adaptive_resblock' + str(i))
+                x = adaptive_ins_layer_resblock(x, channel, gamma[2*i:2*i+2], beta[2*i:2*i+2], smoothing=self.smoothing, scope='adaptive_resblock' + str(i))
 
             # Up-Sampling
             # 继续上采样，依然使用Instance Norm
             # batch_size, 32, 32, 256
             for i in range(2) :
                 # x = up_sample(x, scale_factor=2)
+                x = conv(x, channel * 4, kernel=3, stride=1, pad=1, 
+                         pad_type='reflect', scope='preup_conv_'+str(i))
+                x = lrelu(x)
                 x = tf.nn.depth_to_space(x, 2)
-                x = conv(x, channel//2, kernel=3, stride=1, pad=1, pad_type='reflect', scope='up_conv_'+str(i))
-                x = layer_instance_norm(x, scope='layer_ins_norm_'+str(i))
+                x = conv(x, channel//2, kernel=3, stride=1, pad=1, 
+                         pad_type='reflect', scope='up_conv_'+str(i))
+                #x = layer_instance_norm(x, scope='layer_ins_norm_'+str(i))
+                x = adaptive_instance_layer_norm(
+                    x, gamma[-2+i], beta[-2+i], scope='layer_ins_norm_'+str(i))
                 x = relu(x)
 
                 channel = channel // 2
 
             # 好像通常进行回归计算，要么使用sigmoid，要么使用tanh
             # x = up_sample(x, scale_factor=2)
-            x = tf.nn.depth_to_space(x, 2)
-            x = conv(x, channels=3, kernel=7, stride=1, pad=3, pad_type='reflect', scope='G_logit')
+            # x = tf.nn.depth_to_space(x, 2)
+            x = conv(x, channels=3, kernel=7, stride=1, pad=3, 
+                     pad_type='reflect', scope='G_logit')
             x = tanh(x)
 
             return x, cam_logit, heatmap
 
-    def MLP(self, x, use_bias=True, reuse=False, scope='MLP'):
-        channel = self.ch * self.n_res
+    def MLP(self, x, channel, use_bias=True, reuse=False, scope='MLP'):
+        #channel = self.ch * self.n_res
 
         if self.light :
             x = global_avg_pooling(x)
