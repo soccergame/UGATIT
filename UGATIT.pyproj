@@ -36,6 +36,8 @@
     <Content Include="assets\user_study.png" />
     <Content Include="LICENSE" />
     <Content Include="README.md" />
+    <Content Include="test_shufflenet.sh" />
+    <Content Include="train_shufflenet.sh" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="main.py" />
