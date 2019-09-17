@@ -104,12 +104,12 @@ class UGATIT(object) :
         channel = self.ch # 起始的卷积核个数，默认为64
         # 输入图像大小应该为256*256
         with tf.variable_scope(scope, reuse=reuse) :
-            x = conv(x_init, channel, kernel=7, stride=1, pad=3, pad_type='reflect', scope='conv')
+            x = conv(x_init, channel, kernel=7, stride=2, pad=3, pad_type='reflect', scope='conv')
             x = instance_norm(x, scope='ins_norm')
             x = relu(x)
 
             # Down-Sampling，将图像的H和W变为原始的1/4
-            # 经过降采样，图像的尺寸变为：batch_size, 64, 64, 128
+            # 经过降采样，图像的尺寸变为：batch_size, 32, 32, 256
             for i in range(2) :
                 x = conv(x, channel*2, kernel=3, stride=2, pad=1, pad_type='reflect', scope='conv_'+str(i))
                 x = instance_norm(x, scope='ins_norm_'+str(i))
@@ -119,6 +119,7 @@ class UGATIT(object) :
 
             # Down-Sampling Bottleneck，这里图像没有进一步降采样
             # 属于简单的resnet模块堆积
+            # batch_size, 32, 32, 256
             for i in range(self.n_res):
                 x = resblock(x, channel, scope='resblock_' + str(i))
 
@@ -152,8 +153,10 @@ class UGATIT(object) :
 
             # Up-Sampling
             # 继续上采样，依然使用Instance Norm
+            # batch_size, 32, 32, 256
             for i in range(2) :
-                x = up_sample(x, scale_factor=2)
+                # x = up_sample(x, scale_factor=2)
+                x = tf.nn.depth_to_space(x, 2)
                 x = conv(x, channel//2, kernel=3, stride=1, pad=1, pad_type='reflect', scope='up_conv_'+str(i))
                 x = layer_instance_norm(x, scope='layer_ins_norm_'+str(i))
                 x = relu(x)
@@ -161,6 +164,8 @@ class UGATIT(object) :
                 channel = channel // 2
 
             # 好像通常进行回归计算，要么使用sigmoid，要么使用tanh
+            # x = up_sample(x, scale_factor=2)
+            x = tf.nn.depth_to_space(x, 2)
             x = conv(x, channels=3, kernel=7, stride=1, pad=3, pad_type='reflect', scope='G_logit')
             x = tanh(x)
 
@@ -398,13 +403,21 @@ class UGATIT(object) :
             D_ad_loss_A = (discriminator_loss(self.gan_type, real_A_logit, fake_A_logit) + discriminator_loss(self.gan_type, real_A_cam_logit, fake_A_cam_logit) + GP_A + GP_CAM_A)
             D_ad_loss_B = (discriminator_loss(self.gan_type, real_B_logit, fake_B_logit) + discriminator_loss(self.gan_type, real_B_cam_logit, fake_B_cam_logit) + GP_B + GP_CAM_B)
 
-            reconstruction_A = L1_loss(x_aba, self.domain_A) # reconstruction
-            reconstruction_B = L1_loss(x_bab, self.domain_B) # reconstruction
+            reconstruction_A = similarity_loss(x_aba, self.domain_A)#L1_loss(x_aba, self.domain_A) # reconstruction
+            reconstruction_B = similarity_loss(x_bab, self.domain_B)#L1_loss(x_bab, self.domain_B) # reconstruction
 
-            identity_A = L1_loss(x_aa, self.domain_A)
-            identity_B = L1_loss(x_bb, self.domain_B)
+            identity_A = similarity_loss(x_aa, self.domain_A)#L1_loss(x_aa, self.domain_A)
+            identity_B = similarity_loss(x_bb, self.domain_B)#L1_loss(x_bb, self.domain_B)
 
+            # b--->a 所以a为目标域，b为源域，所以输入为b的时候，
+            #        生成器generate_b2a的编码部分解析出来的特征应当被判定为属于源域；
+            #        输入为a的时候，生成器generate_b2a的编码部分解析出来的特征应当
+            #        被判定为属于目标域。
             cam_A = cam_loss(source=cam_ba, non_source=cam_aa)
+            # a--->b 所以b为目标域，a为源域，所以输入为a的时候，
+            #        生成器generate_a2b的编码部分解析出来的特征应当被判定为属于源域；
+            #        输入为b的时候，生成器generate_a2b的编码部分解析出来的特征应当
+            #        被判定为属于目标域。
             cam_B = cam_loss(source=cam_ab, non_source=cam_bb)
 
             Generator_A_gan = self.adv_weight * G_ad_loss_A
@@ -453,14 +466,18 @@ class UGATIT(object) :
 
             self.G_A_loss = tf.summary.scalar("G_A_loss", Generator_A_loss)
             self.G_A_gan = tf.summary.scalar("G_A_gan", Generator_A_gan)
-            self.G_A_cycle = tf.summary.scalar("G_A_cycle", Generator_A_cycle)
-            self.G_A_identity = tf.summary.scalar("G_A_identity", Generator_A_identity)
+            self.G_A_cycle = tf.summary.scalar("G_A_cycle", 
+                                               tf.reduce_mean(Generator_A_cycle))
+            self.G_A_identity = tf.summary.scalar("G_A_identity", 
+                                                  tf.reduce_mean(Generator_A_identity))
             self.G_A_cam = tf.summary.scalar("G_A_cam", Generator_A_cam)
 
             self.G_B_loss = tf.summary.scalar("G_B_loss", Generator_B_loss)
             self.G_B_gan = tf.summary.scalar("G_B_gan", Generator_B_gan)
-            self.G_B_cycle = tf.summary.scalar("G_B_cycle", Generator_B_cycle)
-            self.G_B_identity = tf.summary.scalar("G_B_identity", Generator_B_identity)
+            self.G_B_cycle = tf.summary.scalar("G_B_cycle", 
+                                               tf.reduce_mean(Generator_B_cycle))
+            self.G_B_identity = tf.summary.scalar("G_B_identity", 
+                                                  tf.reduce_mean(Generator_B_identity))
             self.G_B_cam = tf.summary.scalar("G_B_cam", Generator_B_cam)
 
             self.D_A_loss = tf.summary.scalar("D_A_loss", Discriminator_A_loss)
@@ -556,11 +573,11 @@ class UGATIT(object) :
                 if np.mod(idx+1, self.print_freq) == 0 :
                     save_images(batch_A_images, [self.batch_size, 1],
                                 './{}/real_A_{:03d}_{:05d}.png'.format(self.sample_dir, epoch, idx+1))
-                    # save_images(batch_B_images, [self.batch_size, 1],
-                    #             './{}/real_B_{:03d}_{:05d}.png'.format(self.sample_dir, epoch, idx+1))
+                    save_images(batch_B_images, [self.batch_size, 1],
+                                './{}/real_B_{:03d}_{:05d}.png'.format(self.sample_dir, epoch, idx+1))
 
-                    # save_images(fake_A, [self.batch_size, 1],
-                    #             './{}/fake_A_{:03d}_{:05d}.png'.format(self.sample_dir, epoch, idx+1))
+                    save_images(fake_A, [self.batch_size, 1],
+                                 './{}/fake_A_{:03d}_{:05d}.png'.format(self.sample_dir, epoch, idx+1))
                     save_images(fake_B, [self.batch_size, 1],
                                 './{}/fake_B_{:03d}_{:05d}.png'.format(self.sample_dir, epoch, idx+1))
 

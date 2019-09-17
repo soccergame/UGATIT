@@ -1,6 +1,8 @@
 import tensorflow as tf
 import tensorflow.contrib as tf_contrib
 
+import numpy as np
+
 # Xavier : tf_contrib.layers.xavier_initializer()
 # He : tf_contrib.layers.variance_scaling_initializer()
 # Normal : tf.random_normal_initializer(mean=0.0, stddev=0.02)
@@ -269,8 +271,63 @@ def spectral_norm(w, iteration=1):
 
 def L1_loss(x, y):
     loss = tf.reduce_mean(tf.abs(x - y))
-
     return loss
+
+def dssim(kernel_size=11, k1=0.01, k2=0.03, max_value=1.0):
+    # 该函数是使用纯粹的keras语言重写的tf.image.ssim函数，
+    # 主要是为了让这段代码在plaidML后端上面也能运行
+    # port of tf.image.ssim to pure keras in order to work on plaidML backend.
+    # ssim主要是一种图像质量评价标准
+    def func(y_true, y_pred):
+        ch = tf.shape(y_pred)[-1]
+    
+        def _fspecial_gauss(size, sigma):
+            #Function to mimic the 'fspecial' gaussian MATLAB function.
+            coords = np.arange(0, size, dtype=tf.keras.backend.floatx())
+            coords -= (size - 1 ) / 2.0
+            g = coords**2
+            g *= ( -0.5 / (sigma**2) )
+            g = np.reshape (g, (1,-1)) + np.reshape(g, (-1,1) )
+            g = tf.constant ( np.reshape (g, (1,-1)) )
+            g = tf.nn.softmax(g)
+            g = tf.reshape (g, (size, size, 1, 1))
+            g = tf.tile (g, (1,1,ch,1))
+            return g
+    
+        kernel = _fspecial_gauss(kernel_size,1.5)
+    
+        def reducer(x):
+            return tf.nn.depthwise_conv2d(x, kernel, strides=(1, 1, 1, 1), padding='VALID')
+    
+        c1 = (k1 * max_value) ** 2
+        c2 = (k2 * max_value) ** 2
+    
+        mean0 = reducer(y_true)
+        mean1 = reducer(y_pred)
+        num0 = mean0 * mean1 * 2.0
+        den0 = tf.square(mean0) + tf.square(mean1)
+        luminance = (num0 + c1) / (den0 + c1)
+    
+        num1 = reducer(y_true * y_pred) * 2.0
+        den1 = reducer(tf.square(y_true) + tf.square(y_pred))
+        c2 *= 1.0 #compensation factor
+        cs = (num1 - num0 + c2) / (den1 - den0 + c2)
+    
+        ssim_val = tf.reduce_mean(luminance * cs, axis=(-3, -2) )
+        return(1.0 - ssim_val ) / 2.0
+    
+    return func
+
+def similarity_loss(x, y):
+    loss1 = tf.reduce_mean(tf.abs(x - y), axis=(1, 2), keepdims=False)
+    #print(loss1)
+    #loss2 = tf.reduce_mean(
+    #    tf.nn.softmax_cross_entropy_with_logits_v2(labels=y, logits=x, axis=(1, 2)),
+    #    axis=(1, 2), keepdims=False)
+    #print(loss2)
+    loss3 = 10*dssim()(y, x)
+    #print(loss3)
+    return tf.reduce_mean(loss1 + loss3)
 
 def cam_loss(source, non_source) :
 
