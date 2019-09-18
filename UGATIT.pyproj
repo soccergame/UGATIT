@@ -38,6 +38,7 @@
     <Content Include="README.md" />
     <Content Include="test_shufflenet.sh" />
     <Content Include="train_shufflenet.sh" />
+    <Content Include="train_shufflenet_wgan.sh" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="main.py" />

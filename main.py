@@ -48,6 +48,8 @@ def parse_args():
     parser.add_argument('--sample_dir', type=str, default='samples',
                         help='Directory name to save the samples on training')
     parser.add_argument("--gpus", default="-1", help="Choose which gpu to use(eg. -1)")
+    parser.add_argument('--model_name', type=str, default='v1',
+                        help='Choose which model to use')
 
     return check_args(parser.parse_args())
 
@@ -95,7 +97,10 @@ def main():
         gan = UGATIT(sess, args)
 
         # build graph
-        gan.build_model()
+        if args.model_name == 'v2':
+            gan.build_model_v2()
+        else:
+            gan.build_model()
 
         # show network architecture
         show_all_variables()
