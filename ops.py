@@ -99,7 +99,8 @@ def fully_connected(x, units, use_bias=True, sn=False, scope='linear'):
                 x = tf.matmul(x, spectral_norm(w))
 
         else :
-            x = tf.layers.dense(x, units=units, kernel_initializer=weight_init, kernel_regularizer=weight_regularizer, use_bias=use_bias)
+            x = tf.layers.dense(x, units=units, kernel_initializer=weight_init, 
+                                kernel_regularizer=weight_regularizer, use_bias=use_bias)
 
         return x
 
@@ -110,18 +111,24 @@ def flatten(x) :
 # Residual-block
 ##################################################################################
 
-def resblock(x_init, channels, use_bias=True, scope='resblock_0'):
+def resblock(x_init, channels, stride=1, use_bias=True, scope='resblock_0'):
     with tf.variable_scope(scope):
+        if stride == 1:
+            shortcut = x_init
+        else:
+            shortcut = tf.nn.max_pool(inputs, [1, 1], stride=stride)
         with tf.variable_scope('res1'):
-            x = conv(x_init, channels, kernel=3, stride=1, pad=1, pad_type='reflect', use_bias=use_bias)
+            x = conv(x_init, channels, kernel=3, stride=stride, pad=1, 
+                     pad_type='reflect', use_bias=use_bias)
             x = instance_norm(x)
-            x = relu(x)
+            x = lrelu(x)
 
         with tf.variable_scope('res2'):
-            x = conv(x, channels, kernel=3, stride=1, pad=1, pad_type='reflect', use_bias=use_bias)
+            x = conv(x, channels, kernel=3, stride=1, pad=1, pad_type='reflect', 
+                     use_bias=use_bias)
             x = instance_norm(x)
 
-        return x + x_init
+        return x + shortcut
 
 def adaptive_ins_layer_resblock(x_init, channels, gamma, beta, use_bias=True, smoothing=True, scope='adaptive_resblock') :
     with tf.variable_scope(scope):

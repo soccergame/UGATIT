@@ -106,3 +106,6 @@ venv.bak/
 /results/UGATIT_generate_teacher_data_lsgan_4resblock_6dis_1_1_10_10_1000_sn_smoothing
 /results
 /results_old
+/dataset/generate_teacher_data
+/logs_v2/UGATIT_light_generate_teacher_data_lsgan_4resblock_6dis_1_1_10_10_1000_sn_smoothing
+/results_v2/UGATIT_light_generate_teacher_data_lsgan_4resblock_6dis_1_1_10_10_1000_sn_smoothing

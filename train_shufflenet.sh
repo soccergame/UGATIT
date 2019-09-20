@@ -7,8 +7,11 @@ python main.py \
     --sample_dir=results_v2 \
     --gpus=0 \
     --batch_size=1 \
-    --ch=32 \
+    --ch=64 \
+    --light=True \
     --iteration=25000 \
     --model_name=v2 \
+    --lr=0.00001 \
+    --cam_weight=100 \
     --dataset=generate_teacher_data \
     --result_dir=results_v2
