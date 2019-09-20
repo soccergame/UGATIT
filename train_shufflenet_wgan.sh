@@ -8,6 +8,7 @@ python main.py \
     --gpus=1 \
     --batch_size=1 \
     --ch=64 \
+    --light=True \
     --iteration=26000 \
     --dataset=generate_teacher_data \
     --result_dir=results_v1

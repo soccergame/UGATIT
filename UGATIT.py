@@ -179,7 +179,8 @@ class UGATIT(object) :
             cam_logit = tf.concat([cam_gap_logit, cam_gmp_logit], axis=-1)
             x = tf.concat([x_gap, x_gmp], axis=-1)
 
-            x_s = conv(x, channel, kernel=1, stride=1, scope='s_conv_1x1')
+            # 形状特征，未来可能会直接与关键点的形状对应
+            x_s = conv(x, 1, kernel=1, stride=1, scope='s_conv_1x1')
             x_s = lrelu(x_shape)
 
             x_t = conv(x, channel, kernel=1, stride=1, scope='t_conv_1x1')
@@ -192,10 +193,15 @@ class UGATIT(object) :
     def decoder(self, feat_map, gamma, beta, reuse=False, scope="decoder"):
         channel = self.ch * 4
         with tf.variable_scope(scope, reuse=reuse):
+            # 首先将形状特征图恢复原状
+            if feat_map.shape.as_list()[-1] != channel:
+                x = conv(feat_map, channel, kernel=1, stride=1, scope='s_conv_1x1')
+                x = lrelu(x)
+            else:
+                x = feat_map
             # Up-Sampling Bottleneck
             # 上采样的resnet模块，用到Adaptive Instance Normalization
             # 这里每一个AdaIns使用相同的gamma与beta
-            x = feat_map
             for i in range(self.n_res):
                 x = adaptive_ins_layer_resblock(
                     x, channel, gamma[2*i:2*i+2], beta[2*i:2*i+2], 
@@ -323,9 +329,9 @@ class UGATIT(object) :
                     #x = instance_norm(x, scope='ins_norm_'+str(i))
                     #x = lrelu(x)
 
-                ave_x = global_avg_pooling(x)
-                max_x = global_max_pooling(x)
-                x = tf.concat([ave_x, max_x], axis=-1)
+                #ave_x = global_avg_pooling(x)
+                #max_x = global_max_pooling(x)
+                #x = tf.concat([ave_x, max_x], axis=-1)
                 
             for i in range(2) :
                 x = fully_connected(x, channel, use_bias, scope='linear_' + str(i))
@@ -592,8 +598,10 @@ class UGATIT(object) :
 
             """用鉴别器进行分类"""
             real_A_logit, real_A_cam_logit, real_B_logit, real_B_cam_logit = self.discriminate_real(self.domain_A, self.domain_B)
-            fake_BA_logit, fake_BA_cam_logit, fake_AB_logit, fake_AB_cam_logit = self.discriminate_fake(x_ba, x_ab)
-            fake_AA_logit, fake_AA_cam_logit, fake_BB_logit, fake_BB_cam_logit = self.discriminate_fake(x_aa, x_bb)
+            fake_BA_logit, fake_BA_cam_logit, fake_AB_logit, fake_AB_cam_logit = self.discriminate_fake(x_bsat, x_asbt)
+            fake_AA_logit, fake_AA_cam_logit, fake_BB_logit, fake_BB_cam_logit = self.discriminate_fake(x_asat, x_bsbt)
+
+            """还需要一个鉴别器对ID进行分类"""
             
             """开始设置鉴别器损失函数和decoder重建损失函数"""
             # 新的cam损失函数，把b当成源域，a当成目标域，也可以反过来
@@ -609,6 +617,16 @@ class UGATIT(object) :
             identity_B2 = similarity_loss(x_bs_asbtt, self.domain_B)
             identity_A3 = similarity_loss(x_asbts_at, self.domain_A)
             identity_B3 = similarity_loss(x_bsats_bt, self.domain_B)
+            # 形状应当是非常相似的
+            shape_sim_A = L1_loss(encoder_as, encoder_asbts)
+            shape_sim_B = L1_loss(encoder_bs, encoder_bsats)
+            # 纹理不需要一致，而是应该能够指示人才对
+            # 这样使用L2 loss感觉是有问题的，不过对于目前的训练模式应该可以接受
+            # 后续应该改为使用鉴别器进行分类操作
+            texture_A = L2_loss(tf.concat([gamma_at, beta_at], axis=-1), 
+                                tf.concat([gamma_bsatt, beta_bsatt], axis=-1))
+            texture_B = L2_loss(tf.concat([gamma_bt, beta_bt], axis=-1), 
+                                tf.concat([gamma_asbtt, beta_asbtt], axis=-1))
 
             # GAN损失函数
             if self.gan_type.__contains__('wgan') or self.gan_type == 'dragan' :
@@ -964,10 +982,20 @@ class UGATIT(object) :
             trainB = tf.data.Dataset.from_tensor_slices(self.trainB_dataset)
 
 
-            gpu_device = '/gpu:0'
-            trainA = trainA.apply(shuffle_and_repeat(self.dataset_num)).apply(map_and_batch(Image_Data_Class.image_processing, self.batch_size, num_parallel_batches=16, drop_remainder=True)).apply(prefetch_to_device(gpu_device, None))
-            trainB = trainB.apply(shuffle_and_repeat(self.dataset_num)).apply(map_and_batch(Image_Data_Class.image_processing, self.batch_size, num_parallel_batches=16, drop_remainder=True)).apply(prefetch_to_device(gpu_device, None))
+            trainA = trainA.repeat()
+            trainB = trainB.repeat()
 
+            trainA = trainA.shuffle(len(self.trainA_dataset))
+            trainB = trainB.shuffle(len(self.trainB_dataset))
+
+            trainA = trainA.map(Image_Data_Class.image_processing, -1)
+            trainB = trainB.map(Image_Data_Class.image_processing, -1)
+
+            trainA = trainA.batch(self.batch_size)
+            trainB = trainB.batch(self.batch_size)
+
+            trainA = trainA.prefetch(self.batch_size * 4)
+            trainB = trainB.prefetch(self.batch_size * 4)
 
             trainA_iterator = trainA.make_one_shot_iterator()
             trainB_iterator = trainB.make_one_shot_iterator()

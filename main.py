@@ -100,6 +100,7 @@ def main():
         if args.model_name == 'v2':
             gan.build_model_v2()
         else:
+            #print('model name: ', args.model_name)
             gan.build_model()
 
         # show network architecture

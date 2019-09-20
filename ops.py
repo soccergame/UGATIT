@@ -116,7 +116,7 @@ def resblock(x_init, channels, stride=1, use_bias=True, scope='resblock_0'):
         if stride == 1:
             shortcut = x_init
         else:
-            shortcut = tf.nn.max_pool(inputs, [1, 1], stride=stride)
+            shortcut = tf.layers.max_pooling2d(x_init, 1, strides=stride)
         with tf.variable_scope('res1'):
             x = conv(x_init, channels, kernel=3, stride=stride, pad=1, 
                      pad_type='reflect', use_bias=use_bias)
@@ -130,15 +130,22 @@ def resblock(x_init, channels, stride=1, use_bias=True, scope='resblock_0'):
 
         return x + shortcut
 
-def adaptive_ins_layer_resblock(x_init, channels, gamma, beta, use_bias=True, smoothing=True, scope='adaptive_resblock') :
+def adaptive_ins_layer_resblock(x_init, channels, gamma, beta, stride=1, 
+                                use_bias=True, smoothing=True, scope='adaptive_resblock') :
     with tf.variable_scope(scope):
+        if stride == 1:
+            shortcut = x_init
+        else:
+            shortcut = tf.layers.max_pooling2d(x_init, 1, strides=stride)
         with tf.variable_scope('res1'):
-            x = conv(x_init, channels, kernel=3, stride=1, pad=1, pad_type='reflect', use_bias=use_bias)
+            x = conv(x_init, channels, kernel=3, stride=stride, pad=1, 
+                     pad_type='reflect', use_bias=use_bias)
             x = adaptive_instance_layer_norm(x, gamma[0], beta[0], smoothing)
             x = relu(x)
 
         with tf.variable_scope('res2'):
-            x = conv(x, channels, kernel=3, stride=1, pad=1, pad_type='reflect', use_bias=use_bias)
+            x = conv(x, channels, kernel=3, stride=1, pad=1, pad_type='reflect', 
+                     use_bias=use_bias)
             x = adaptive_instance_layer_norm(x, gamma[1], beta[1], smoothing)
 
         return x + x_init
@@ -278,6 +285,10 @@ def spectral_norm(w, iteration=1):
 
 def L1_loss(x, y):
     loss = tf.reduce_mean(tf.abs(x - y))
+    return loss
+
+def L2_loss(x, y):
+    loss = tf.reduce_mean(tf.square(x - y))
     return loss
 
 def dssim(kernel_size=11, k1=0.01, k2=0.03, max_value=1.0):
