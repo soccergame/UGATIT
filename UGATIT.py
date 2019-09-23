@@ -134,6 +134,9 @@ class UGATIT(object) :
 
 
             cam_logit = tf.concat([cam_gap_logit, cam_gmp_logit], axis=-1)
+            # 因为目标是做二分类，而不是区分源域和目标域，所以需要再设置一个分类器
+            # 既然是做二分类，能不能一次实现？？
+            cam_logit = fully_connected(cam_logit, 2, use_bias=False, scope='classify')
             x = tf.concat([x_gap, x_gmp], axis=-1)
 
             x = conv(x, channel, kernel=1, stride=1, scope='conv_1x1')
@@ -177,6 +180,8 @@ class UGATIT(object) :
 
 
             cam_logit = tf.concat([cam_gap_logit, cam_gmp_logit], axis=-1)
+            # 因为目标是做二分类，而不是区分源域和目标域，所以需要再设置一个分类器
+            cam_logit = fully_connected(cam_logit, 2, use_bias=False, scope='classify')
             x = tf.concat([x_gap, x_gmp], axis=-1)
 
             # 形状特征，未来可能会直接与关键点的形状对应
@@ -605,8 +610,12 @@ class UGATIT(object) :
             
             """开始设置鉴别器损失函数和decoder重建损失函数"""
             # 新的cam损失函数，把b当成源域，a当成目标域，也可以反过来
-            cam_1 = cam_loss(source=cam_b_logit, non_source=cam_a_logit)
-            cam_2 = cam_loss(source=cam_ab_logit, non_source=cam_ba_logit)
+            # 这里的工作并不是在区分源域和目标域，而是纯粹在做二分类
+            # 未来这里应当可以根据ID的总数目进行相应的扩展。
+            cam_1 = cls_loss(source=cam_b_logit, non_source=cam_a_logit,
+                             batch_size=self.batch_size)
+            cam_2 = cls_loss(source=cam_ab_logit, non_source=cam_ba_logit,
+                             batch_size=self.batch_size)
 
             # 重建的损失函数（包括了Cycle损失）
             reconstruction_A = similarity_loss(x_asbts_bsatt, self.domain_A)
@@ -832,8 +841,13 @@ class UGATIT(object) :
             
             """开始设置鉴别器损失函数和decoder重建损失函数"""
             # 新的cam损失函数，把b当成源域，a当成目标域，也可以反过来
-            cam_1 = cam_loss(source=cam_b_logit, non_source=cam_a_logit)
-            cam_2 = cam_loss(source=cam_ab_logit, non_source=cam_ba_logit)
+            # 这里的工作并不是在区分源域和目标域，而是纯粹在做二分类
+            # 未来这里应当可以根据ID的总数目进行相应的扩展。
+            # 这里的cam loss应当被视作鉴别器损失而不是生成损失
+            cam_1 = cls_loss(source=cam_b_logit, non_source=cam_a_logit, 
+                             batch_size=self.batch_size)
+            cam_2 = cls_loss(source=cam_ab_logit, non_source=cam_ba_logit,
+                             batch_size=self.batch_size)
 
             # 重建的损失函数
             reconstruction_A = similarity_loss(x_aba, self.domain_A)
@@ -887,14 +901,14 @@ class UGATIT(object) :
             Generator_B_identity = self.identity_weight * identity_B
             Generator_B_cam = self.cam_weight * cam_2
 
-            Generator_A_loss = Generator_A_gan + Generator_A_cycle + Generator_A_identity + Generator_A_cam
-            Generator_B_loss = Generator_B_gan + Generator_B_cycle + Generator_B_identity + Generator_B_cam
+            Generator_A_loss = Generator_A_gan + Generator_A_cycle + Generator_A_identity# + Generator_A_cam
+            Generator_B_loss = Generator_B_gan + Generator_B_cycle + Generator_B_identity# + Generator_B_cam
 
             Discriminator_A_loss = self.adv_weight * D_ad_loss_A
             Discriminator_B_loss = self.adv_weight * D_ad_loss_B
 
             self.Generator_loss = Generator_A_loss + Generator_B_loss + regularization_loss('generator')
-            self.Discriminator_loss = Discriminator_A_loss + Discriminator_B_loss + regularization_loss('discriminator')
+            self.Discriminator_loss = Discriminator_A_loss + Discriminator_B_loss + Generator_A_cam + Generator_B_cam + regularization_loss('discriminator')
 
             """ Result Image """
             self.fake_A = x_ba
@@ -921,7 +935,7 @@ class UGATIT(object) :
                                                tf.reduce_mean(Generator_A_cycle))
             self.G_A_identity = tf.summary.scalar("G_A_identity", 
                                                   tf.reduce_mean(Generator_A_identity))
-            self.G_A_cam = tf.summary.scalar("G_A_cam", Generator_A_cam)
+            self.G_A_cam = tf.summary.scalar("D_A_cam", Generator_A_cam)
 
             self.G_B_loss = tf.summary.scalar("G_B_loss", Generator_B_loss)
             self.G_B_gan = tf.summary.scalar("G_B_gan", Generator_B_gan)
@@ -929,7 +943,7 @@ class UGATIT(object) :
                                                tf.reduce_mean(Generator_B_cycle))
             self.G_B_identity = tf.summary.scalar("G_B_identity", 
                                                   tf.reduce_mean(Generator_B_identity))
-            self.G_B_cam = tf.summary.scalar("G_B_cam", Generator_B_cam)
+            self.G_B_cam = tf.summary.scalar("D_B_cam", Generator_B_cam)
 
             self.D_A_loss = tf.summary.scalar("D_A_loss", Discriminator_A_loss)
             self.D_B_loss = tf.summary.scalar("D_B_loss", Discriminator_B_loss)

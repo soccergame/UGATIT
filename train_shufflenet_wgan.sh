@@ -9,6 +9,7 @@ python main.py \
     --batch_size=1 \
     --ch=64 \
     --light=True \
+    --cam_weight=100 \
     --iteration=26000 \
     --dataset=generate_teacher_data \
     --result_dir=results_v1

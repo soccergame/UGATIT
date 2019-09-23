@@ -356,6 +356,19 @@ def cam_loss(source, non_source) :
 
     return loss
 
+def cls_loss(source, non_source, batch_size=1) :
+
+    identity_loss = tf.reduce_mean(
+        tf.nn.softmax_cross_entropy_with_logits(
+            labels=tf.one_hot([1] * batch_size, depth=2), logits=source))
+    non_identity_loss = tf.reduce_mean(
+        tf.nn.softmax_cross_entropy_with_logits(
+            labels=tf.one_hot([0] * batch_size, depth=2), logits=non_source))
+
+    loss = identity_loss + non_identity_loss
+
+    return loss
+
 def regularization_loss(scope_name) :
     """
     If you want to use "Regularization"
