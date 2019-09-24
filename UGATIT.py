@@ -125,26 +125,35 @@ class UGATIT(object) :
 
             # Class Activation Map
             cam_x = global_avg_pooling(x)
-            cam_gap_logit, cam_x_weight = fully_connected_with_w(cam_x, scope='CAM_logit')
-            x_gap = tf.multiply(x, cam_x_weight)
+            cam_gap_logit, cam_x_weight = fully_connected_with_w(
+                cam_x, units=2, scope='CAM_logit')
+            # x_gap = tf.multiply(x, cam_x_weight)
 
             cam_x = global_max_pooling(x)
-            cam_gmp_logit, cam_x_weight = fully_connected_with_w(cam_x, reuse=True, scope='CAM_logit')
-            x_gmp = tf.multiply(x, cam_x_weight)
+            cam_gmp_logit, cam_x_weight = fully_connected_with_w(
+                cam_x, units=2, reuse=True, scope='CAM_logit')
+            # x_gmp = tf.multiply(x, cam_x_weight)
 
-
-            cam_logit = tf.concat([cam_gap_logit, cam_gmp_logit], axis=-1)
+            # cam_logit = tf.concat([cam_gap_logit, cam_gmp_logit], axis=-1)
             # 因为目标是做二分类，而不是区分源域和目标域，所以需要再设置一个分类器
             # 既然是做二分类，能不能一次实现？？
-            cam_logit = fully_connected(cam_logit, 2, use_bias=False, scope='classify')
-            x = tf.concat([x_gap, x_gmp], axis=-1)
+            # cam_logit = fully_connected(cam_logit, 2, use_bias=False, scope='classify')
+            # x = tf.concat([x_gap, x_gmp], axis=-1)
+
+            # channel shuffer
+            x = tf.concat([x, x], axis=-1)
+            x = tf.multiply(x, tf.reshape(cam_x_weight, [1, 1, 1, -1]))
+            w = x.shape.as_list()[-2]
+            h = x.shape.as_list()[-3]
+            x = tf.transpose(tf.reshape(x, [-1, h, w, 2, channel]), [0, 1, 2, 4, 3])
+            x = tf.reshape(x, [-1, h, w, channel * 2])
 
             x = conv(x, channel, kernel=1, stride=1, scope='conv_1x1')
             x = lrelu(x)
 
             heatmap = tf.squeeze(tf.reduce_sum(x, axis=-1))
 
-            return x, cam_logit, heatmap
+            return x, cam_gap_logit, cam_gmp_logit, heatmap
 
     def encoder_v3(self, x_init, reuse=False, scope="encoder_v3"):
         channel = self.ch # 起始的卷积核个数，默认为64
@@ -171,18 +180,28 @@ class UGATIT(object) :
 
             # Class Activation Map
             cam_x = global_avg_pooling(x)
-            cam_gap_logit, cam_x_weight = fully_connected_with_w(cam_x, scope='CAM_logit')
-            x_gap = tf.multiply(x, cam_x_weight)
+            cam_gap_logit, cam_x_weight = fully_connected_with_w(
+                cam_x, units=2, scope='CAM_logit')
+            #x_gap = tf.multiply(x, cam_x_weight)
 
             cam_x = global_max_pooling(x)
-            cam_gmp_logit, cam_x_weight = fully_connected_with_w(cam_x, reuse=True, scope='CAM_logit')
-            x_gmp = tf.multiply(x, cam_x_weight)
+            cam_gmp_logit, cam_x_weight = fully_connected_with_w(
+                cam_x, units=2, reuse=True, scope='CAM_logit')
+            #x_gmp = tf.multiply(x, cam_x_weight)
 
 
-            cam_logit = tf.concat([cam_gap_logit, cam_gmp_logit], axis=-1)
+            # cam_logit = tf.concat([cam_gap_logit, cam_gmp_logit], axis=-1)
             # 因为目标是做二分类，而不是区分源域和目标域，所以需要再设置一个分类器
-            cam_logit = fully_connected(cam_logit, 2, use_bias=False, scope='classify')
-            x = tf.concat([x_gap, x_gmp], axis=-1)
+            # cam_logit = fully_connected(cam_logit, 2, use_bias=False, scope='classify')
+            # x = tf.concat([x_gap, x_gmp], axis=-1)
+
+            # channel shuffer
+            x = tf.concat([x, x], axis=-1)
+            x = tf.multiply(x, tf.reshape(cam_x_weight, [1, 1, 1, -1]))
+            w = x.shape.as_list()[-2]
+            h = x.shape.as_list()[-3]
+            x = tf.transpose(tf.reshape(x, [-1, h, w, 2, channel]), [0, 1, 2, 4, 3])
+            x = tf.reshape(x, [-1, h, w, channel * 2])
 
             # 形状特征，未来可能会直接与关键点的形状对应
             x_s = conv(x, 1, kernel=1, stride=1, scope='s_conv_1x1')
@@ -193,7 +212,7 @@ class UGATIT(object) :
 
             heatmap = tf.squeeze(tf.reduce_sum(tf.concat([x_s, x_t], axis=-1), axis=-1))
 
-            return x_s, x_t, cam_logit, heatmap
+            return x_s, x_t, cam_gap_logit, cam_gmp_logit, heatmap
 
     def decoder(self, feat_map, gamma, beta, reuse=False, scope="decoder"):
         channel = self.ch * 4
@@ -802,8 +821,8 @@ class UGATIT(object) :
             """ Define Generator, Discriminator """
             # 首先定义生成器
             with tf.variable_scope('generator'):
-                encoder_a, cam_a_logit, _ = self.encoder(self.domain_A)
-                encoder_b, cam_b_logit, _ = self.encoder(self.domain_B, reuse=True)
+                encoder_a, cam_a_gap_logit, cam_a_gmp_logit, _ = self.encoder(self.domain_A)
+                encoder_b, cam_b_gap_logit, cam_b_gmp_logit, _ = self.encoder(self.domain_B, reuse=True)
 
                 num_or_size_splits = [self.ch * 4] * (self.n_res * 2)
                 num_or_size_splits.extend([self.ch * 2, self.ch])
@@ -821,8 +840,10 @@ class UGATIT(object) :
                 x_bb = self.decoder(encoder_b, gamma_b, beta_b, scope='decoder_b', reuse=True)
 
                 """开始cycle"""
-                encoder_ba, cam_ba_logit, _ = self.encoder(x_ba, reuse=True)
-                encoder_ab, cam_ab_logit, _ = self.encoder(x_ab, reuse=True)
+                encoder_ba, cam_ba_gap_logit, cam_ba_gmp_logit, _ = self.encoder(x_ba, 
+                                                                                 reuse=True)
+                encoder_ab, cam_ab_gap_logit, cam_ab_gmp_logit, _ = self.encoder(x_ab, 
+                                                                                 reuse=True)
                 gamma_ba, beta_ba = self.MLP(encoder_ba, 
                                              self.ch * self.n_res * 8 + (self.ch * 2) + self.ch, 
                                              split=num_or_size_splits, reuse=True)
@@ -844,9 +865,13 @@ class UGATIT(object) :
             # 这里的工作并不是在区分源域和目标域，而是纯粹在做二分类
             # 未来这里应当可以根据ID的总数目进行相应的扩展。
             # 这里的cam loss应当被视作鉴别器损失而不是生成损失
-            cam_1 = cls_loss(source=cam_b_logit, non_source=cam_a_logit, 
+            cam_1 = cls_loss(source=cam_a_gap_logit, non_source=cam_b_gap_logit, 
                              batch_size=self.batch_size)
-            cam_2 = cls_loss(source=cam_ab_logit, non_source=cam_ba_logit,
+            cam_2 = cls_loss(source=cam_a_gmp_logit, non_source=cam_b_gmp_logit,
+                             batch_size=self.batch_size)
+            cam_3 = cls_loss(source=cam_ba_gap_logit, non_source=cam_ab_gap_logit,
+                             batch_size=self.batch_size)
+            cam_4 = cls_loss(source=cam_ba_gmp_logit, non_source=cam_ab_gmp_logit,
                              batch_size=self.batch_size)
 
             # 重建的损失函数
@@ -893,13 +918,13 @@ class UGATIT(object) :
             Generator_A_gan = self.adv_weight * G_ad_loss_A
             Generator_A_cycle = self.cycle_weight * reconstruction_B
             Generator_A_identity = self.identity_weight * identity_A
-            Generator_A_cam = self.cam_weight * cam_1
+            Generator_A_cam = self.cam_weight * (cam_1 + cam_3)
 
 
             Generator_B_gan = self.adv_weight * G_ad_loss_B
             Generator_B_cycle = self.cycle_weight * reconstruction_A
             Generator_B_identity = self.identity_weight * identity_B
-            Generator_B_cam = self.cam_weight * cam_2
+            Generator_B_cam = self.cam_weight * (cam_2 + cam_4)
 
             Generator_A_loss = Generator_A_gan + Generator_A_cycle + Generator_A_identity# + Generator_A_cam
             Generator_B_loss = Generator_B_gan + Generator_B_cycle + Generator_B_identity# + Generator_B_cam
@@ -1031,47 +1056,47 @@ class UGATIT(object) :
             # 同样，在鉴别器中，heatmap并没有使用，不知道这里为什么会有heatmap
             real_A_logit, real_A_cam_logit, real_B_logit, real_B_cam_logit = self.discriminate_real(self.domain_A, self.domain_B)
             fake_BA_logit, fake_BA_cam_logit, fake_AB_logit, fake_AB_cam_logit = self.discriminate_fake(x_ba, x_ab)
-            fake_AA_logit, fake_AA_cam_logit, fake_BB_logit, fake_BB_cam_logit = self.discriminate_fake(x_aa, x_bb)
+            #fake_AA_logit, fake_AA_cam_logit, fake_BB_logit, fake_BB_cam_logit = self.discriminate_fake(x_aa, x_bb)
             #fake_ABA_logit, fake_ABA_cam_logit, fake_BAB_logit, fake_BAB_cam_logit = self.discriminate_fake(x_aba, x_bab)
 
 
             """ Define Loss """
             if self.gan_type.__contains__('wgan') or self.gan_type == 'dragan' :
-                GP_A_1, GP_CAM_BA = self.gradient_panalty(real=self.domain_A, fake=x_ba, scope="discriminator_A")
-                GP_B_1, GP_CAM_AB = self.gradient_panalty(real=self.domain_B, fake=x_ab, scope="discriminator_B")
-                GP_A_2, GP_CAM_AA = self.gradient_panalty(real=self.domain_A, fake=x_aa, scope="discriminator_A")
-                GP_B_2, GP_CAM_BB = self.gradient_panalty(real=self.domain_B, fake=x_bb, scope="discriminator_B")
+                GP_A, GP_CAM_BA = self.gradient_panalty(real=self.domain_A, fake=x_ba, scope="discriminator_A")
+                GP_B, GP_CAM_AB = self.gradient_panalty(real=self.domain_B, fake=x_ab, scope="discriminator_B")
+                #GP_A_2, GP_CAM_AA = self.gradient_panalty(real=self.domain_A, fake=x_aa, scope="discriminator_A")
+                #GP_B_2, GP_CAM_BB = self.gradient_panalty(real=self.domain_B, fake=x_bb, scope="discriminator_B")
                 #GP_A_3, GP_CAM_ABA = self.gradient_panalty(real=self.domain_A, fake=x_aba, scope="discriminator_A")
                 #GP_B_3, GP_CAM_BAB = self.gradient_panalty(real=self.domain_B, fake=x_bab, scope="discriminator_B")
             else :
-                GP_A_1, GP_CAM_BA = 0, 0
-                GP_B_1, GP_CAM_AB = 0, 0
-                GP_A_2, GP_CAM_AA = 0, 0
-                GP_B_2, GP_CAM_BB = 0, 0
+                GP_A, GP_CAM_BA = 0, 0
+                GP_B, GP_CAM_AB = 0, 0
+                #GP_A_2, GP_CAM_AA = 0, 0
+                #GP_B_2, GP_CAM_BB = 0, 0
                 #GP_A_3, GP_CAM_ABA = 0, 0
                 #GP_B_3, GP_CAM_BAB = 0, 0
 
             G_ad_loss_A = (generator_loss(self.gan_type, fake_BA_logit) + 
-                           generator_loss(self.gan_type, fake_BA_cam_logit) + 
-                           generator_loss(self.gan_type, fake_AA_logit) + 
-                           generator_loss(self.gan_type, fake_AA_cam_logit))
+                           generator_loss(self.gan_type, fake_BA_cam_logit))# + 
+                           #generator_loss(self.gan_type, fake_AA_logit) + 
+                           #generator_loss(self.gan_type, fake_AA_cam_logit))
             G_ad_loss_B = (generator_loss(self.gan_type, fake_AB_logit) + 
-                           generator_loss(self.gan_type, fake_AB_cam_logit) + 
-                           generator_loss(self.gan_type, fake_BB_logit) + 
-                           generator_loss(self.gan_type, fake_BB_cam_logit))
+                           generator_loss(self.gan_type, fake_AB_cam_logit))# + 
+                           #generator_loss(self.gan_type, fake_BB_logit) + 
+                           #generator_loss(self.gan_type, fake_BB_cam_logit))
 
             D_ad_loss_A = (
                 discriminator_loss(self.gan_type, real_A_logit, fake_BA_logit) + 
                 discriminator_loss(self.gan_type, real_A_cam_logit, fake_BA_cam_logit) + 
-                discriminator_loss(self.gan_type, real_A_logit, fake_AA_logit) + 
-                discriminator_loss(self.gan_type, real_A_cam_logit, fake_AA_cam_logit) +
-                GP_A_1 + GP_CAM_BA + GP_A_2 + GP_CAM_AA)
+                #discriminator_loss(self.gan_type, real_A_logit, fake_AA_logit) + 
+                #discriminator_loss(self.gan_type, real_A_cam_logit, fake_AA_cam_logit) +
+                GP_A + GP_CAM_BA)# + GP_A_2 + GP_CAM_AA)
             D_ad_loss_B = (
                 discriminator_loss(self.gan_type, real_B_logit, fake_AB_logit) + 
                 discriminator_loss(self.gan_type, real_B_cam_logit, fake_AB_cam_logit) +
-                discriminator_loss(self.gan_type, real_B_logit, fake_BB_logit) + 
-                discriminator_loss(self.gan_type, real_B_cam_logit, fake_BB_cam_logit) +
-                GP_B_1 + GP_CAM_AB + GP_B_2 + GP_CAM_BB)
+                #discriminator_loss(self.gan_type, real_B_logit, fake_BB_logit) + 
+                #discriminator_loss(self.gan_type, real_B_cam_logit, fake_BB_cam_logit) +
+                GP_B + GP_CAM_AB)# + GP_B_2 + GP_CAM_BB)
 
             reconstruction_A = similarity_loss(x_aba, self.domain_A)#L1_loss(x_aba, self.domain_A) # reconstruction
             reconstruction_B = similarity_loss(x_bab, self.domain_B)#L1_loss(x_bab, self.domain_B) # reconstruction

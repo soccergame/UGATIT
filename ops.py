@@ -53,21 +53,21 @@ def conv(x, channels, kernel=4, stride=2, pad=0, pad_type='zero', use_bias=True,
 
         return x
 
-def fully_connected_with_w(x, use_bias=True, sn=False, reuse=False, scope='linear'):
+def fully_connected_with_w(x, units=1, use_bias=True, sn=False, reuse=False, scope='linear'):
     with tf.variable_scope(scope, reuse=reuse):
         x = flatten(x)
         bias = 0.0
         shape = x.get_shape().as_list()
         channels = shape[-1]
 
-        w = tf.get_variable("kernel", [channels, 1], tf.float32,
+        w = tf.get_variable("kernel", [channels, units], tf.float32,
                             initializer=weight_init, regularizer=weight_regularizer)
 
         if sn :
             w = spectral_norm(w)
 
         if use_bias :
-            bias = tf.get_variable("bias", [1],
+            bias = tf.get_variable("bias", [units],
                                    initializer=tf.constant_initializer(0.0))
 
             x = tf.matmul(x, w) + bias
@@ -75,9 +75,11 @@ def fully_connected_with_w(x, use_bias=True, sn=False, reuse=False, scope='linea
             x = tf.matmul(x, w)
 
         if use_bias :
-            weights = tf.gather(tf.transpose(tf.nn.bias_add(w, bias)), 0)
+            #weights = tf.gather(tf.transpose(tf.nn.bias_add(w, bias)), 0)
+            weights = tf.transpose(tf.nn.bias_add(w, bias))
         else :
-            weights = tf.gather(tf.transpose(w), 0)
+            #weights = tf.gather(tf.transpose(w), 0)
+            weights = tf.transpose(w)
 
         return x, weights
 
