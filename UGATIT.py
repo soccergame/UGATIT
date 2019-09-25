@@ -294,6 +294,12 @@ class UGATIT(object) :
             cam_logit = tf.concat([cam_gap_logit, cam_gmp_logit], axis=-1)
             x = tf.concat([x_gap, x_gmp], axis=-1)
 
+            # shuffle channel
+            w = x.shape.as_list()[-2]
+            h = x.shape.as_list()[-3]
+            x = tf.transpose(tf.reshape(x, [-1, h, w, 2, channel]), [0, 1, 2, 4, 3])
+            x = tf.reshape(x, [-1, h, w, channel * 2])
+
             x = conv(x, channel, kernel=1, stride=1, scope='conv_1x1')
             x = lrelu(x)
 

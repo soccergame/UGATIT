@@ -350,7 +350,7 @@ def similarity_loss(x, y):
     return tf.reduce_mean(loss1 + loss3)
 
 def cam_loss(source, non_source) :
-
+    # CamLoss其实就是BCELoss只能用来判断真和假，不能用来判断身份
     identity_loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.ones_like(source), logits=source))
     non_identity_loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.zeros_like(non_source), logits=non_source))
 
