@@ -6,7 +6,7 @@ python main.py \
     --log_dir=logs_v2 \
     --sample_dir=results_v2 \
     --gpus=1 \
-    --batch_size=2 \
+    --batch_size=1 \
     --ch=64 \
     --light=True \
     --iteration=26000 \

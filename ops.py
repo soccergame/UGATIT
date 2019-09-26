@@ -122,13 +122,13 @@ def resblock(x_init, channels, stride=1, use_bias=True, scope='resblock_0'):
         with tf.variable_scope('res1'):
             x = conv(x_init, channels, kernel=3, stride=stride, pad=1, 
                      pad_type='reflect', use_bias=use_bias)
-            x = instance_norm(x)
+            x = layer_instance_norm(x)
             x = lrelu(x)
 
         with tf.variable_scope('res2'):
             x = conv(x, channels, kernel=3, stride=1, pad=1, pad_type='reflect', 
                      use_bias=use_bias)
-            x = instance_norm(x)
+            x = layer_instance_norm(x)
 
         return x + shortcut
 

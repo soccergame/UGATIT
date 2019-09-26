@@ -34,7 +34,10 @@ class UGATIT(object) :
         self.save_freq = args.save_freq
 
         self.init_lr = args.lr
-        self.ch = args.ch
+        self.ch = args.ch # 初始通道数目
+        self.max_ch = args.max_ch # 最大的通道数目
+        self.n_downsample = args.n_downsample # 2倍降采样的次数
+        self.n_light_ds = args.n_light_ds # 用于light模式的2倍降采样的次数
 
         """ Weight """
         self.adv_weight = args.adv_weight
@@ -99,20 +102,152 @@ class UGATIT(object) :
     ##################################################################################
     # Generator
     ##################################################################################
+    def CAM(self, feat_map, version='sigmoid', shuffle=True, reuse=False, scope='CAM'):
+        """
+        CAM：基于分类的自注意力机制
 
-    def encoder(self, x_init, reuse=False, scope="encoder"):
-        channel = self.ch # 起始的卷积核个数，默认为64
+        输入参数：
+        feat_map：输入的特征
+        version：CAM输出的分类特征，默认使用sigmoid分类方式输出logits
+                 总共两种logits形式：['sigmoid', 'softmax']
+        shuffle: 是否对通道数进行随机重排？默认为True
+        reuse：是否重复使用
+        scope：命名空间
+
+        输出参数：
+        x：编码的图像
+        logits：CAM算法输出的logits，sigmoid形式输出的logits长度为1
+                softmax形式输出的logits长度与类别数相同
+                （目前只考虑了二分类的情况）
+        """
         with tf.variable_scope(scope, reuse=reuse):
-            x = conv(x_init, channel, kernel=7, stride=1, pad=3, 
-                     pad_type='reflect', scope='conv')
-            x = instance_norm(x, scope='ins_norm')
+            channel = feat_map.shape.as_list()[-1]
+            if version == 'sigmoid':
+                # Class Activation Map
+                cam_x = global_avg_pooling(feat_map)
+                cam_gap_logit, cam_x_weight = fully_connected_with_w(cam_x, 
+                                                                     scope='CAM_logit')
+                x_gap = tf.multiply(feat_map, cam_x_weight)
+
+                cam_x = global_max_pooling(feat_map)
+                cam_gmp_logit, cam_x_weight = fully_connected_with_w(cam_x, reuse=True, 
+                                                                     scope='CAM_logit')
+                x_gmp = tf.multiply(feat_map, cam_x_weight)
+
+                cam_logit = tf.concat([cam_gap_logit, cam_gmp_logit], axis=-1)
+                x = tf.concat([x_gap, x_gmp], axis=-1)
+
+                # shuffle channel
+                if shuffle:
+                    w = x.shape.as_list()[-2]
+                    h = x.shape.as_list()[-3]
+                    x = tf.transpose(tf.reshape(x, [-1, h, w, 2, channel]), [0, 1, 2, 4, 3])
+                    x = tf.reshape(x, [-1, h, w, channel * 2])
+            else:
+                # Class Activation Map
+                cam_x = global_avg_pooling(feat_map)
+                cam_gap_logit, cam_x_weight = fully_connected_with_w(
+                    cam_x, units=2, scope='CAM_logit')
+
+                cam_x = global_max_pooling(feat_map)
+                cam_gmp_logit, cam_x_weight = fully_connected_with_w(
+                    cam_x, units=2, reuse=True, scope='CAM_logit')
+
+                # channel shuffer
+                x = tf.concat([feat_map, feat_map], axis=-1)
+                x = tf.multiply(x, tf.reshape(cam_x_weight, [1, 1, 1, -1]))
+
+                if shuffle:
+                    w = x.shape.as_list()[-2]
+                    h = x.shape.as_list()[-3]
+                    x = tf.transpose(tf.reshape(x, [-1, h, w, 2, channel]), [0, 1, 2, 4, 3])
+                    x = tf.reshape(x, [-1, h, w, channel * 2])
+
+                cam_logit = [cam_gap_logit, cam_gmp_logit]
+
+            return x, cam_logit
+
+    def MLP(self, x, units, split=None, use_bias=True, reuse=False, scope='MLP'):
+        """
+        多层感知机，用于提取风格（纹理）特征
+
+        输入参数：
+        x：输入的Tensor，为四维
+        units：希望得到的特征的长度
+        split：切分方式
+        use_bias：是否使用偏置项，默认为True
+        reuse：是否重复使用
+        scope：命名空间
+
+        输出参数：
+        x：编码的图像
+        gamma：用于纹理尺度缩放的特征
+        beta：用于纹理中心化的特征
+        """
+        with tf.variable_scope(scope, reuse=reuse):
+            if self.light :
+                # light模式下，使用resnet模块进行降采样
+                channel = x.shape.as_list()[-1]
+                for i in range(self.n_light_ds): 
+                    x = resblock(x, channel, 2, scope='resblock_'+str(i))
+                    #x = conv(x, self.ch * 8, kernel=3, stride=2, pad=1, pad_type='reflect', 
+                    #         scope='conv_'+str(i))
+                    #x = instance_norm(x, scope='ins_norm_'+str(i))
+                    #x = lrelu(x)
+
+                #ave_x = global_avg_pooling(x)
+                #max_x = global_max_pooling(x)
+                #x = tf.concat([ave_x, max_x], axis=-1)
+                
+            for i in range(2) :
+                x = fully_connected(x, units, use_bias, scope='linear_' + str(i))
+                x = lrelu(x)
+
+            gamma = fully_connected(x, units, use_bias, scope='gamma')
+            beta = fully_connected(x, units, use_bias, scope='beta')
+
+            gamma = tf.reshape(gamma, shape=[self.batch_size, 1, 1, units])
+            beta = tf.reshape(beta, shape=[self.batch_size, 1, 1, units])
+
+            if split is not None:
+                # 对gamma和beta进行切分
+                gamma = tf.split(value=gamma, axis=-1, num_or_size_splits=split)
+                beta = tf.split(value=beta, axis=-1, num_or_size_splits=split)
+
+            return gamma, beta
+
+    def encoder(self, x_init, cam_version='sigmoid', split_shape_texture=False, 
+                reuse=False, scope='encoder'):
+        """
+        编码器——版本一：将输入的图像进行编码
+
+        输入参数：
+        x_init：输入的图像
+        reuse：是否重复使用
+        cam_version：CAM输出的分类特征，默认使用sigmoid分类方式输出logits
+                     总共两种logits形式：['sigmoid', 'softmax']
+        split_shape_texture：是否将形状和纹理的解码分开输出
+        scope：命名空间
+
+        输出参数：
+        x：编码的图像
+        cam_logit：CAM算法得到的分类结果
+        heatmap：热图，表征此时的注意力区域
+        """
+        with tf.variable_scope(scope, reuse=reuse):
+            # 起始的卷积核个数，默认为64
+            channel = self.ch 
+            x = conv(x_init, channel, kernel=7, stride=1, pad=3, pad_type='reflect', 
+                     scope='conv')
+            x = layer_instance_norm(x, scope='layer_ins_norm')
             x = lrelu(x)
 
             # Down-Sampling，将图像的H和W变为原始的1/4
             # 经过降采样，图像的尺寸变为：batch_size, 64, 64, 256
-            for i in range(2) :
-                x = conv(x, channel*2, kernel=3, stride=2, pad=1, pad_type='reflect', scope='conv_'+str(i))
-                x = instance_norm(x, scope='ins_norm_'+str(i))
+            for i in range(self.n_downsample) :
+                x = conv(x, channel*2, kernel=3, stride=2, pad=1, pad_type='reflect', 
+                         scope='conv_'+str(i))
+                x = layer_instance_norm(x, scope='layer_ins_norm_'+str(i))
                 x = lrelu(x)
 
                 channel = channel * 2
@@ -123,100 +258,42 @@ class UGATIT(object) :
             for i in range(self.n_res):
                 x = resblock(x, channel, scope='resblock_' + str(i))
 
-            # Class Activation Map
-            cam_x = global_avg_pooling(x)
-            cam_gap_logit, cam_x_weight = fully_connected_with_w(
-                cam_x, units=2, scope='CAM_logit')
-            # x_gap = tf.multiply(x, cam_x_weight)
+            x, cam_logit = self.CAM(x, version=cam_version, reuse=reuse)
 
-            cam_x = global_max_pooling(x)
-            cam_gmp_logit, cam_x_weight = fully_connected_with_w(
-                cam_x, units=2, reuse=True, scope='CAM_logit')
-            # x_gmp = tf.multiply(x, cam_x_weight)
-
-            # cam_logit = tf.concat([cam_gap_logit, cam_gmp_logit], axis=-1)
-            # 因为目标是做二分类，而不是区分源域和目标域，所以需要再设置一个分类器
-            # 既然是做二分类，能不能一次实现？？
-            # cam_logit = fully_connected(cam_logit, 2, use_bias=False, scope='classify')
-            # x = tf.concat([x_gap, x_gmp], axis=-1)
-
-            # channel shuffer
-            x = tf.concat([x, x], axis=-1)
-            x = tf.multiply(x, tf.reshape(cam_x_weight, [1, 1, 1, -1]))
-            w = x.shape.as_list()[-2]
-            h = x.shape.as_list()[-3]
-            x = tf.transpose(tf.reshape(x, [-1, h, w, 2, channel]), [0, 1, 2, 4, 3])
-            x = tf.reshape(x, [-1, h, w, channel * 2])
 
             x = conv(x, channel, kernel=1, stride=1, scope='conv_1x1')
             x = lrelu(x)
 
-            heatmap = tf.squeeze(tf.reduce_sum(x, axis=-1))
-
-            return x, cam_gap_logit, cam_gmp_logit, heatmap
-
-    def encoder_v3(self, x_init, reuse=False, scope="encoder_v3"):
-        channel = self.ch # 起始的卷积核个数，默认为64
-        with tf.variable_scope(scope, reuse=reuse):
-            x = conv(x_init, channel, kernel=7, stride=1, pad=3, 
-                     pad_type='reflect', scope='conv')
-            x = instance_norm(x, scope='ins_norm')
-            x = lrelu(x)
-
-            # Down-Sampling，将图像的H和W变为原始的1/4
-            # 经过降采样，图像的尺寸变为：batch_size, 64, 64, 256
-            for i in range(2) :
-                x = conv(x, channel*2, kernel=3, stride=2, pad=1, pad_type='reflect', scope='conv_'+str(i))
-                x = instance_norm(x, scope='ins_norm_'+str(i))
-                x = lrelu(x)
-
-                channel = channel * 2
-
-            # Down-Sampling Bottleneck，这里图像没有进一步降采样
-            # 属于简单的resnet模块堆积
-            # batch_size, 64, 64, 256
-            for i in range(self.n_res):
-                x = resblock(x, channel, scope='resblock_' + str(i))
-
-            # Class Activation Map
-            cam_x = global_avg_pooling(x)
-            cam_gap_logit, cam_x_weight = fully_connected_with_w(
-                cam_x, units=2, scope='CAM_logit')
-            #x_gap = tf.multiply(x, cam_x_weight)
-
-            cam_x = global_max_pooling(x)
-            cam_gmp_logit, cam_x_weight = fully_connected_with_w(
-                cam_x, units=2, reuse=True, scope='CAM_logit')
-            #x_gmp = tf.multiply(x, cam_x_weight)
-
-
-            # cam_logit = tf.concat([cam_gap_logit, cam_gmp_logit], axis=-1)
-            # 因为目标是做二分类，而不是区分源域和目标域，所以需要再设置一个分类器
-            # cam_logit = fully_connected(cam_logit, 2, use_bias=False, scope='classify')
-            # x = tf.concat([x_gap, x_gmp], axis=-1)
-
-            # channel shuffer
-            x = tf.concat([x, x], axis=-1)
-            x = tf.multiply(x, tf.reshape(cam_x_weight, [1, 1, 1, -1]))
-            w = x.shape.as_list()[-2]
-            h = x.shape.as_list()[-3]
-            x = tf.transpose(tf.reshape(x, [-1, h, w, 2, channel]), [0, 1, 2, 4, 3])
-            x = tf.reshape(x, [-1, h, w, channel * 2])
-
             # 形状特征，未来可能会直接与关键点的形状对应
-            x_s = conv(x, 1, kernel=1, stride=1, scope='s_conv_1x1')
-            x_s = lrelu(x_shape)
+            if split_shape_texture == True:
+                x_s = conv(x, 1, kernel=1, stride=1, scope='s_conv_1x1')
+                x_s = lrelu(x_shape)
+                x = [x, x_s]
 
-            x_t = conv(x, channel, kernel=1, stride=1, scope='t_conv_1x1')
-            x_t = lrelu(x_t)
+            if isinstance(x, list):
+                heatmap = tf.squeeze(tf.reduce_sum(tf.concat(x, -1), axis=-1))
+            else:
+                heatmap = tf.squeeze(tf.reduce_sum(x, axis=-1))
 
-            heatmap = tf.squeeze(tf.reduce_sum(tf.concat([x_s, x_t], axis=-1), axis=-1))
-
-            return x_s, x_t, cam_gap_logit, cam_gmp_logit, heatmap
+            return x, cam_logit, heatmap
 
     def decoder(self, feat_map, gamma, beta, reuse=False, scope="decoder"):
-        channel = self.ch * 4
+        """
+        解码器：将传入的特征解码恢复成原始的图像
+
+        输入参数：
+        feat_map：传入的形状特征，为一个四维的tensor
+        gamma：传入的纹理特征，用于恢复图像为一个确定的人
+        beta：传入的纹理特征，用于恢复图像为一个确定的人
+        channel：纹理特征的通道数（虽然原始的纹理特征已经被解析为gamma和beta）
+        reuse：是否重复使用
+        scope：命名空间
+
+        输出参数：
+        x：根据输入参数解码恢复的图像
+        """
         with tf.variable_scope(scope, reuse=reuse):
+            channel = gamma[0].shape.as_list()[-1]
             # 首先将形状特征图恢复原状
             if feat_map.shape.as_list()[-1] != channel:
                 x = conv(feat_map, channel, kernel=1, stride=1, scope='s_conv_1x1')
@@ -234,20 +311,22 @@ class UGATIT(object) :
             # Up-Sampling
             # 继续上采样，依然使用Instance Norm
             # batch_size, 32, 32, 256
-            for i in range(2) :
+            for i in range(self.n_downsample) :
                 # x = up_sample(x, scale_factor=2)
-                x = conv(x, channel * 4, kernel=3, stride=1, pad=1, 
-                         pad_type='reflect', scope='preup_conv_'+str(i))
-                x = lrelu(x)
+                #x = conv(x, channel * 4, kernel=3, stride=1, pad=1, 
+                #         pad_type='reflect', scope='preup_conv_'+str(i))
+                #x = lrelu(x)
                 x = tf.nn.depth_to_space(x, 2)
-                x = conv(x, channel//2, kernel=3, stride=1, pad=1, 
-                         pad_type='reflect', scope='up_conv_'+str(i))
+                channel = channel // 2
+                x = conv(x, channel, kernel=3, stride=1, pad=1, pad_type='reflect', 
+                         scope='up_conv_'+str(i))
                 #x = layer_instance_norm(x, scope='layer_ins_norm_'+str(i))
                 x = adaptive_instance_layer_norm(
-                    x, gamma[-2+i], beta[-2+i], scope='layer_ins_norm_'+str(i))
+                    x, gamma[-self.n_downsample+i], beta[-self.n_downsample+i], 
+                    scope='layer_ins_norm_'+str(i))
                 x = lrelu(x)
 
-                channel = channel // 2
+                
 
             # 好像通常进行回归计算，要么使用sigmoid，要么使用tanh
             # x = up_sample(x, scale_factor=2)
@@ -259,126 +338,36 @@ class UGATIT(object) :
             return x
 
     def generator(self, x_init, reuse=False, scope="generator"):
-        channel = self.ch # 起始的卷积核个数，默认为64
+        """
+        生成网络：将传入的图像生成为指定风格的图像
+
+        输入参数：
+        x_init：输入的图像
+        reuse：是否重复使用
+        scope：命名空间
+
+        输出参数：
+        x：编码的图像
+        cam_logit：CAM算法得到的分类结果
+        heatmap：热图，表征此时的注意力区域
+        """
         # 输入图像大小应该为256*256
         with tf.variable_scope(scope, reuse=reuse) :
-            x = conv(x_init, channel, kernel=7, stride=1, pad=3, 
-                     pad_type='reflect', scope='conv')
-            x = instance_norm(x, scope='ins_norm')
-            x = lrelu(x)
-
-            # Down-Sampling，将图像的H和W变为原始的1/4
-            # 经过降采样，图像的尺寸变为：batch_size, 64, 64, 256
-            for i in range(2) :
-                x = conv(x, channel*2, kernel=3, stride=2, pad=1, pad_type='reflect', scope='conv_'+str(i))
-                x = instance_norm(x, scope='ins_norm_'+str(i))
-                x = lrelu(x)
-
-                channel = channel * 2
-
-            # Down-Sampling Bottleneck，这里图像没有进一步降采样
-            # 属于简单的resnet模块堆积
-            # batch_size, 64, 64, 256
-            for i in range(self.n_res):
-                x = resblock(x, channel, scope='resblock_' + str(i))
-
-            # Class Activation Map
-            cam_x = global_avg_pooling(x)
-            cam_gap_logit, cam_x_weight = fully_connected_with_w(cam_x, scope='CAM_logit')
-            x_gap = tf.multiply(x, cam_x_weight)
-
-            cam_x = global_max_pooling(x)
-            cam_gmp_logit, cam_x_weight = fully_connected_with_w(cam_x, reuse=True, scope='CAM_logit')
-            x_gmp = tf.multiply(x, cam_x_weight)
-
-            cam_logit = tf.concat([cam_gap_logit, cam_gmp_logit], axis=-1)
-            x = tf.concat([x_gap, x_gmp], axis=-1)
-
-            # shuffle channel
-            w = x.shape.as_list()[-2]
-            h = x.shape.as_list()[-3]
-            x = tf.transpose(tf.reshape(x, [-1, h, w, 2, channel]), [0, 1, 2, 4, 3])
-            x = tf.reshape(x, [-1, h, w, channel * 2])
-
-            x = conv(x, channel, kernel=1, stride=1, scope='conv_1x1')
-            x = lrelu(x)
-
-            heatmap = tf.squeeze(tf.reduce_sum(x, axis=-1))
+            x, cam_logit, heatmap = self.encoder(x_init, reuse=reuse)
 
             # Gamma, Beta block
-            num_or_size_splits = [channel] * (self.n_res*2)
-            num_or_size_splits.extend([channel // 2, channel // 4])
-            gamma, beta = self.MLP(x, channel*self.n_res*2 + (channel // 2) + (channel // 4), 
+            channel = x.shape.as_list()[-1]
+            num_or_size_splits = [channel] * (self.n_res * 2)
+            for i in range(self.n_downsample):
+                channel = channel // 2
+                num_or_size_splits.append(channel)
+            gamma, beta = self.MLP(x, np.sum(num_or_size_splits), 
                                    split=num_or_size_splits,
                                    reuse=reuse)
 
-            # Up-Sampling Bottleneck
-            # 上采样的resnet模块，用到Adaptive Instance Normalization
-            # 这里每一个AdaIns使用相同的gamma与beta
-            for i in range(self.n_res):
-                x = adaptive_ins_layer_resblock(
-                    x, channel, gamma[2*i:2*i+2], beta[2*i:2*i+2], 
-                    smoothing=self.smoothing, scope='adaptive_resblock' + str(i))
-
-            # Up-Sampling
-            # 继续上采样，依然使用Instance Norm
-            # batch_size, 32, 32, 256
-            for i in range(2) :
-                # x = up_sample(x, scale_factor=2)
-                x = conv(x, channel * 4, kernel=3, stride=1, pad=1, 
-                         pad_type='reflect', scope='preup_conv_'+str(i))
-                x = lrelu(x)
-                x = tf.nn.depth_to_space(x, 2)
-                x = conv(x, channel//2, kernel=3, stride=1, pad=1, 
-                         pad_type='reflect', scope='up_conv_'+str(i))
-                #x = layer_instance_norm(x, scope='layer_ins_norm_'+str(i))
-                x = adaptive_instance_layer_norm(
-                    x, gamma[-2+i], beta[-2+i], scope='layer_ins_norm_'+str(i))
-                x = lrelu(x)
-
-                channel = channel // 2
-
-            # 好像通常进行回归计算，要么使用sigmoid，要么使用tanh
-            # x = up_sample(x, scale_factor=2)
-            # x = tf.nn.depth_to_space(x, 2)
-            x = conv(x, channels=3, kernel=7, stride=1, pad=3, 
-                     pad_type='reflect', scope='G_logit')
-            x = tanh(x)
+            x = self.decoder(x, gamma, beta, reuse=reuse)
 
             return x, cam_logit, heatmap
-
-    def MLP(self, x, channel, split=None, use_bias=True, reuse=False, scope='MLP'):
-        #channel = self.ch * self.n_res
-
-        with tf.variable_scope(scope, reuse=reuse):
-            if self.light :
-                for i in range(4): 
-                    x = resblock(x, self.ch * 4, 2, scope='resblock_'+str(i))
-                    #x = conv(x, self.ch * 8, kernel=3, stride=2, pad=1, pad_type='reflect', 
-                    #         scope='conv_'+str(i))
-                    #x = instance_norm(x, scope='ins_norm_'+str(i))
-                    #x = lrelu(x)
-
-                #ave_x = global_avg_pooling(x)
-                #max_x = global_max_pooling(x)
-                #x = tf.concat([ave_x, max_x], axis=-1)
-                
-            for i in range(2) :
-                x = fully_connected(x, channel, use_bias, scope='linear_' + str(i))
-                x = lrelu(x)
-
-            gamma = fully_connected(x, channel, use_bias, scope='gamma')
-            beta = fully_connected(x, channel, use_bias, scope='beta')
-
-            gamma = tf.reshape(gamma, shape=[self.batch_size, 1, 1, channel])
-            beta = tf.reshape(beta, shape=[self.batch_size, 1, 1, channel])
-
-            if split is not None:
-                # 对gamma和beta进行切分
-                gamma = tf.split(value=gamma, axis=-1, num_or_size_splits=split)
-                beta = tf.split(value=beta, axis=-1, num_or_size_splits=split)
-
-            return gamma, beta
 
     ##################################################################################
     # Discriminator
@@ -413,16 +402,18 @@ class UGATIT(object) :
 
             channel = channel * 2
 
-            cam_x = global_avg_pooling(x)
-            cam_gap_logit, cam_x_weight = fully_connected_with_w(cam_x, sn=self.sn, scope='CAM_logit')
-            x_gap = tf.multiply(x, cam_x_weight)
+            x = self.CAM(x, shuffle=False, reuse=reuse)
 
-            cam_x = global_max_pooling(x)
-            cam_gmp_logit, cam_x_weight = fully_connected_with_w(cam_x, sn=self.sn, reuse=True, scope='CAM_logit')
-            x_gmp = tf.multiply(x, cam_x_weight)
+            #cam_x = global_avg_pooling(x)
+            #cam_gap_logit, cam_x_weight = fully_connected_with_w(cam_x, sn=self.sn, scope='CAM_logit')
+            #x_gap = tf.multiply(x, cam_x_weight)
 
-            cam_logit = tf.concat([cam_gap_logit, cam_gmp_logit], axis=-1)
-            x = tf.concat([x_gap, x_gmp], axis=-1)
+            #cam_x = global_max_pooling(x)
+            #cam_gmp_logit, cam_x_weight = fully_connected_with_w(cam_x, sn=self.sn, reuse=True, scope='CAM_logit')
+            #x_gmp = tf.multiply(x, cam_x_weight)
+
+            #cam_logit = tf.concat([cam_gap_logit, cam_gmp_logit], axis=-1)
+            #x = tf.concat([x_gap, x_gmp], axis=-1)
 
             x = conv(x, channel, kernel=1, stride=1, scope='conv_1x1')
             x = lrelu(x, 0.2)
@@ -451,16 +442,18 @@ class UGATIT(object) :
 
             channel = channel * 2
 
-            cam_x = global_avg_pooling(x)
-            cam_gap_logit, cam_x_weight = fully_connected_with_w(cam_x, sn=self.sn, scope='CAM_logit')
-            x_gap = tf.multiply(x, cam_x_weight)
+            x = self.CAM(x, shuffle=False, reuse=reuse)
 
-            cam_x = global_max_pooling(x)
-            cam_gmp_logit, cam_x_weight = fully_connected_with_w(cam_x, sn=self.sn, reuse=True, scope='CAM_logit')
-            x_gmp = tf.multiply(x, cam_x_weight)
+            #cam_x = global_avg_pooling(x)
+            #cam_gap_logit, cam_x_weight = fully_connected_with_w(cam_x, sn=self.sn, scope='CAM_logit')
+            #x_gap = tf.multiply(x, cam_x_weight)
 
-            cam_logit = tf.concat([cam_gap_logit, cam_gmp_logit], axis=-1)
-            x = tf.concat([x_gap, x_gmp], axis=-1)
+            #cam_x = global_max_pooling(x)
+            #cam_gmp_logit, cam_x_weight = fully_connected_with_w(cam_x, sn=self.sn, reuse=True, scope='CAM_logit')
+            #x_gmp = tf.multiply(x, cam_x_weight)
+
+            #cam_logit = tf.concat([cam_gap_logit, cam_gmp_logit], axis=-1)
+            #x = tf.concat([x_gap, x_gmp], axis=-1)
 
             x = conv(x, channel, kernel=1, stride=1, scope='conv_1x1')
             x = lrelu(x, 0.2)
@@ -573,15 +566,18 @@ class UGATIT(object) :
             """ Define Generator, Discriminator """
             # 首先定义生成器
             with tf.variable_scope('generator'):
-                encoder_as, encoder_at, cam_a_logit, _ = self.encoder_v3(self.domain_A)
-                encoder_bs, encoder_bt, cam_b_logit, _ = self.encoder_v3(self.domain_B, 
-                                                                         reuse=True)
+                [encoder_as, encoder_at], cam_a_logit, _ = self.encoder(
+                    self.domain_A, cam_version='softmax', split_shape_texture=True)
+                [encoder_bs, encoder_bt], cam_b_logit, _ = self.encoder(
+                    self.domain_B, cam_version='softmax', split_shape_texture=True, reuse=True)
 
-                num_or_size_splits = [self.ch * 4] * (self.n_res * 2)
-                num_or_size_splits.extend([self.ch * 2, self.ch])
-                gamma_at, beta_at = self.MLP(encoder_at, 
-                                             self.ch * self.n_res * 8 + (self.ch * 2) + self.ch, 
-                                             split=num_or_size_splits)
+                channel = encoder_a.shape.as_list()[-1]
+                num_or_size_splits = [channel] * (self.n_res * 2)
+                for i in range(self.n_downsample):
+                    channel = channel // 2
+                    num_or_size_splits.append(channel)
+                gamma_at, beta_at = self.MLP(
+                    encoder_a, np.sum(num_or_size_splits), split=num_or_size_splits)
                 gamma_bt, beta_bt = self.MLP(encoder_bt, 
                                              self.ch * self.n_res * 8 + (self.ch * 2) + self.ch, 
                                              split=num_or_size_splits, reuse=True)
@@ -595,9 +591,9 @@ class UGATIT(object) :
                 x_bsbt = self.decoder(encoder_bs, gamma_bt, beta_bt, scope='decoder', reuse=True)
 
                 """开始cycle"""
-                encoder_bsats, encoder_bsatt, cam_ba_logit, _ = self.encoder_v3(
+                encoder_bsats, encoder_bsatt, cam_ba_logit, _ = self.encoder(
                     x_bsat, reuse=True)
-                encoder_asbts, encoder_asbtt, cam_ab_logit, _ = self.encoder_v3(
+                encoder_asbts, encoder_asbtt, cam_ab_logit, _ = self.encoder(
                     x_asbt, reuse=True)
                 gamma_bsatt, beta_bsatt = self.MLP(
                     encoder_bsatt, 
@@ -777,21 +773,19 @@ class UGATIT(object) :
 
         else :
             """ Test """
-            self.test_domain_A = tf.placeholder(tf.float32, [1, self.img_size, self.img_size, self.img_ch], name='test_domain_A')
-            self.test_domain_B = tf.placeholder(tf.float32, [1, self.img_size, self.img_size, self.img_ch], name='test_domain_B')
+            #self.test_domain_A = tf.placeholder(tf.float32, [1, self.img_size, self.img_size, self.img_ch], name='test_domain_A')
+            #self.test_domain_B = tf.placeholder(tf.float32, [1, self.img_size, self.img_size, self.img_ch], name='test_domain_B')
 
-            encoder_a, cam_a_logit, _ = self.encoder(self.test_domain_A)
-            encoder_b, cam_b_logit, _ = self.encoder(self.test_domain_B, reuse=True)
-            num_or_size_splits = [self.ch * 4] * (self.n_res * 2)
-            num_or_size_splits.extend([self.ch * 2, self.ch])
-            gamma_a, beta_a = self.MLP(encoder_a, 
-                                       self.ch * self.n_res * 8 + (self.ch * 2) + self.ch, 
-                                       split=num_or_size_splits)
-            gamma_b, beta_b = self.MLP(encoder_b, 
-                                       self.ch * self.n_res * 8 + (self.ch * 2) + self.ch, 
-                                       split=num_or_size_splits, reuse=True)
-            self.test_fake_A = self.decoder(encoder_b, gamma_b, beta_b, scope='decoder_a')
-            self.test_fake_B = self.decoder(encoder_a, gamma_a, beta_a, scope='decoder_b')
+            #encoder_a, cam_a_logit, _ = self.encoder(self.test_domain_A)
+            #encoder_b, cam_b_logit, _ = self.encoder(self.test_domain_B, reuse=True)
+            #num_or_size_splits = [self.ch * 4] * (self.n_res * 2)
+            #num_or_size_splits.extend([self.ch * 2, self.ch])
+            #gamma_a, beta_a = self.MLP(self.ch * self.n_res * 8 + (self.ch * 2) + self.ch, 
+            #                           split=num_or_size_splits)(encoder_a)
+            #gamma_b, beta_b = self.MLP(self.ch * self.n_res * 8 + (self.ch * 2) + self.ch, 
+            #                           split=num_or_size_splits, reuse=True)(encoder_b)
+            #self.test_fake_A = self.decoder(gamma_b, beta_b, scope='decoder_a')(encoder_b)
+            #self.test_fake_B = self.decoder(gamma_a, beta_a, scope='decoder_b')(encoder_a)
 
     def build_model_v2(self):
         if self.phase == 'train':
@@ -827,17 +821,21 @@ class UGATIT(object) :
             """ Define Generator, Discriminator """
             # 首先定义生成器
             with tf.variable_scope('generator'):
-                encoder_a, cam_a_gap_logit, cam_a_gmp_logit, _ = self.encoder(self.domain_A)
-                encoder_b, cam_b_gap_logit, cam_b_gmp_logit, _ = self.encoder(self.domain_B, reuse=True)
+                encoder_a, [cam_a_gap_logit, cam_a_gmp_logit], _ = self.encoder(
+                    self.domain_A, cam_version='softmax')
+                encoder_b, [cam_b_gap_logit, cam_b_gmp_logit], _ = self.encoder(
+                    self.domain_B, cam_version='softmax', reuse=True)
 
-                num_or_size_splits = [self.ch * 4] * (self.n_res * 2)
-                num_or_size_splits.extend([self.ch * 2, self.ch])
-                gamma_a, beta_a = self.MLP(encoder_a, 
-                                           self.ch * self.n_res * 8 + (self.ch * 2) + self.ch, 
-                                           split=num_or_size_splits)
-                gamma_b, beta_b = self.MLP(encoder_b, 
-                                           self.ch * self.n_res * 8 + (self.ch * 2) + self.ch, 
-                                           split=num_or_size_splits, reuse=True)
+                # Gamma, Beta block
+                channel = encoder_a.shape.as_list()[-1]
+                num_or_size_splits = [channel] * (self.n_res * 2)
+                for i in range(self.n_downsample):
+                    channel = channel // 2
+                    num_or_size_splits.append(channel)
+                gamma_a, beta_a = self.MLP(
+                    encoder_a, np.sum(num_or_size_splits), split=num_or_size_splits)
+                gamma_b, beta_b = self.MLP(
+                    encoder_b, np.sum(num_or_size_splits), split=num_or_size_splits, reuse=True)
 
                 x_ba = self.decoder(encoder_b, gamma_b, beta_b, scope='decoder_a')
                 x_ab = self.decoder(encoder_a, gamma_a, beta_a, scope='decoder_b')
@@ -846,20 +844,19 @@ class UGATIT(object) :
                 x_bb = self.decoder(encoder_b, gamma_b, beta_b, scope='decoder_b', reuse=True)
 
                 """开始cycle"""
-                encoder_ba, cam_ba_gap_logit, cam_ba_gmp_logit, _ = self.encoder(x_ba, 
-                                                                                 reuse=True)
-                encoder_ab, cam_ab_gap_logit, cam_ab_gmp_logit, _ = self.encoder(x_ab, 
-                                                                                 reuse=True)
-                gamma_ba, beta_ba = self.MLP(encoder_ba, 
-                                             self.ch * self.n_res * 8 + (self.ch * 2) + self.ch, 
-                                             split=num_or_size_splits, reuse=True)
-                gamma_ab, beta_ab = self.MLP(encoder_ab, 
-                                             self.ch * self.n_res * 8 + (self.ch * 2) + self.ch, 
-                                             split=num_or_size_splits, reuse=True)
-                x_aba = self.decoder(encoder_ab, gamma_ab, beta_ab, scope='decoder_a', 
-                                     reuse=True)
-                x_bab = self.decoder(encoder_ba, gamma_ba, beta_ba, scope='decoder_b', 
-                                     reuse=True)
+                encoder_ba, [cam_ba_gap_logit, cam_ba_gmp_logit], _ = self.encoder(
+                    x_ba, cam_version='softmax', reuse=True)
+                encoder_ab, [cam_ab_gap_logit, cam_ab_gmp_logit], _ = self.encoder(
+                    x_ab, cam_version='softmax', reuse=True)
+
+                gamma_ba, beta_ba = self.MLP(np.sum(num_or_size_splits), 
+                                             split=num_or_size_splits, reuse=True)(encoder_ba)
+                gamma_ab, beta_ab = self.MLP(np.sum(num_or_size_splits), 
+                                             split=num_or_size_splits, reuse=True)(encoder_ab)
+                x_aba = self.decoder(gamma_ab, beta_ab, scope='decoder_a', 
+                                     reuse=True)(encoder_ab)
+                x_bab = self.decoder(gamma_ba, beta_ba, scope='decoder_b', 
+                                     reuse=True)(encoder_ba)
 
             """用鉴别器进行分类"""
             real_A_logit, real_A_cam_logit, real_B_logit, real_B_cam_logit = self.discriminate_real(self.domain_A, self.domain_B)
@@ -1018,7 +1015,6 @@ class UGATIT(object) :
     def build_model(self):
         if self.phase == 'train' :
             self.lr = tf.placeholder(tf.float32, name='learning_rate')
-
 
             """ Input Image"""
             Image_Data_Class = ImageData(self.img_size, self.img_ch, self.augment_flag)

@@ -30,6 +30,12 @@ def parse_args():
     parser.add_argument('--smoothing', type=str2bool, default=True, help='AdaLIN smoothing effect')
 
     parser.add_argument('--ch', type=int, default=64, help='base channel number per layer')
+    parser.add_argument('--max_ch', type=int, default=512, 
+                        help='The maximum channel number per layer')
+    parser.add_argument('--n_downsample', type=int, default=2, 
+                        help='The number of downsample block')
+    parser.add_argument('--n_light_ds', type=int, default=4, 
+                        help='The number of downsample block in light mode')
     parser.add_argument('--n_res', type=int, default=4, help='The number of resblock')
     parser.add_argument('--n_dis', type=int, default=6, help='The number of discriminator layer')
     parser.add_argument('--n_critic', type=int, default=1, help='The number of critic')
@@ -48,8 +54,8 @@ def parse_args():
     parser.add_argument('--sample_dir', type=str, default='samples',
                         help='Directory name to save the samples on training')
     parser.add_argument("--gpus", default="-1", help="Choose which gpu to use(eg. -1)")
-    parser.add_argument('--model_name', type=str, default='v1',
-                        help='Choose which model to use')
+    parser.add_argument('--model_version', type=str, default='v1',
+                        help='Choose which model version to use')
 
     return check_args(parser.parse_args())
 
@@ -97,7 +103,7 @@ def main():
         gan = UGATIT(sess, args)
 
         # build graph
-        if args.model_name == 'v2':
+        if args.model_version == 'v2':
             gan.build_model_v2()
         else:
             #print('model name: ', args.model_name)
