@@ -11,7 +11,7 @@ python main.py \
     --light=True \
     --iteration=7000 \
     --model_version=v3 \
-    --lr=0.00001 \
+    --lr=0.0001 \
     --cam_weight=1 \
     --dataset=generate_teacher_data \
     --result_dir=results_v3

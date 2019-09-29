@@ -23,7 +23,7 @@ class ImageData:
             if p > 0.5:
                 img = augmentation(img, augment_size)
 
-        mask = tf.sign(1 + image)
+        mask = tf.sign(1 + img)
         return img, mask
 
 def load_test_data(image_path, size=256):
@@ -46,7 +46,7 @@ def augmentation(image, augment_size):
     #image = tf.random_crop(image, ori_image_shape, seed=seed)
     #mask = tf.sign(1 + image)
 
-    return image, mask
+    return image#, mask
 
 def save_images(images, size, image_path):
     return imsave(inverse_transform(images), size, image_path)
