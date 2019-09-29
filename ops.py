@@ -364,14 +364,15 @@ def dssim(kernel_size=11, k1=0.01, k2=0.03, max_value=1.0):
 
 def similarity_loss(x, y):
     loss1 = tf.reduce_mean(tf.abs(x - y), axis=(1, 2), keepdims=False)
-    #print(loss1)
-    #loss2 = tf.reduce_mean(
-    #    tf.nn.softmax_cross_entropy_with_logits_v2(labels=y, logits=x, axis=(1, 2)),
-    #    axis=(1, 2), keepdims=False)
-    #print(loss2)
     loss3 = 10*dssim()(y, x)
-    #print(loss3)
-    return tf.reduce_mean(loss1 + loss3)
+
+    x_h = tf.image.crop_to_bounding_box(x, 77, 77, 102, 102)
+    y_h = tf.image.crop_to_bounding_box(y, 77, 77, 102, 102)
+
+    loss2 = tf.reduce_mean(tf.abs(x_h - y_h), axis=(1, 2), keepdims=False)
+    loss4 = 10*dssim()(y_h, x_h)
+
+    return tf.reduce_mean(loss1 + loss3 + loss2 + loss4)
 
 def cam_loss(source, non_source) :
     # CamLoss其实就是BCELoss只能用来判断真和假，不能用来判断身份

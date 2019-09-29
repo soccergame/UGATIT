@@ -23,7 +23,8 @@ class ImageData:
             if p > 0.5:
                 img = augmentation(img, augment_size)
 
-        return img
+        mask = tf.sign(1 + image)
+        return img, mask
 
 def load_test_data(image_path, size=256):
     img = cv2.imread(image_path, flags=cv2.IMREAD_COLOR)
@@ -37,12 +38,15 @@ def load_test_data(image_path, size=256):
     return img
 
 def augmentation(image, augment_size):
+    # 人脸位置：（77，77）宽高（102，102）
     seed = random.randint(0, 2 ** 31 - 1)
     ori_image_shape = tf.shape(image)
     image = tf.image.random_flip_left_right(image, seed=seed)
-    image = tf.image.resize_images(image, [augment_size, augment_size])
-    image = tf.random_crop(image, ori_image_shape, seed=seed)
-    return image
+    #image = tf.image.resize_images(image, [augment_size, augment_size])
+    #image = tf.random_crop(image, ori_image_shape, seed=seed)
+    #mask = tf.sign(1 + image)
+
+    return image, mask
 
 def save_images(images, size, image_path):
     return imsave(inverse_transform(images), size, image_path)

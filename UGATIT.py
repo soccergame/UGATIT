@@ -275,7 +275,10 @@ class UGATIT(object) :
             else:
                 heatmap = tf.squeeze(tf.reduce_sum(x, axis=-1))
 
-            return x, cam_logit, heatmap
+            #heatmap_mean, heatmap_sigma = tf.nn.moments(heatmap, axes=[1, 2], keep_dims=True)
+            #heatmap = (heatmap - ins_mean) / (tf.sqrt(ins_sigma + eps))
+
+            return x, cam_logit, tf.sign(relu(heatmap))
 
     def decoder(self, feat_map, gamma, beta, reuse=False, scope="decoder"):
         """
@@ -560,15 +563,15 @@ class UGATIT(object) :
             trainA_iterator = trainA.make_one_shot_iterator()
             trainB_iterator = trainB.make_one_shot_iterator()
 
-            self.domain_A = trainA_iterator.get_next()
-            self.domain_B = trainB_iterator.get_next()
+            self.domain_A, self.mask_A = trainA_iterator.get_next()
+            self.domain_B, self.mask_B = trainB_iterator.get_next()
 
             """ Define Generator, Discriminator """
             # 首先定义生成器
             with tf.variable_scope('generator'):
-                [encoder_as, encoder_at], [cam_a_gap, cam_a_gmp], _ = self.encoder(
+                [encoder_as, encoder_at], [cam_a_gap, cam_a_gmp], heat_a = self.encoder(
                     self.domain_A, cam_version='softmax', split_shape_texture=True)
-                [encoder_bs, encoder_bt], [cam_b_gap, cam_b_gmp], _ = self.encoder(
+                [encoder_bs, encoder_bt], [cam_b_gap, cam_b_gmp], heat_b = self.encoder(
                     self.domain_B, cam_version='softmax', split_shape_texture=True, reuse=True)
 
                 channel = encoder_at.shape.as_list()[-1]
@@ -590,9 +593,9 @@ class UGATIT(object) :
                 x_bsbt = self.decoder(encoder_bs, gamma_bt, beta_bt, scope='decoder', reuse=True)
 
                 """开始cycle"""
-                [encoder_bsats, encoder_bsatt], [cam_ba_gap, cam_ba_gmp], _ = self.encoder(
+                [encoder_bsats, encoder_bsatt], [cam_ba_gap, cam_ba_gmp], heat_ba = self.encoder(
                     x_bsat, cam_version='softmax', split_shape_texture=True, reuse=True)
-                [encoder_asbts, encoder_asbtt], [cam_ab_gap, cam_ab_gmp], _ = self.encoder(
+                [encoder_asbts, encoder_asbtt], [cam_ab_gap, cam_ab_gmp], heat_ab = self.encoder(
                     x_asbt, cam_version='softmax', split_shape_texture=True, reuse=True)
                 gamma_bsatt, beta_bsatt = self.MLP(
                     encoder_bsatt, 
@@ -640,6 +643,12 @@ class UGATIT(object) :
                              batch_size=self.batch_size)
             cam_4 = cls_loss(source=cam_ba_gmp, non_source=cam_ab_gmp,
                              batch_size=self.batch_size)
+
+            # 热图与mask的对应
+            sim_mask_a = L1_loss(heat_a, self.mask_A)# + L2_loss(heat_a, self.mask_A)
+            sim_mask_b = L1_loss(heat_b, self.mask_B)# + L2_loss(heat_b, self.mask_B)
+            sim_mask_ab = L1_loss(heat_ab, self.mask_A)#
+            sim_mask_ba = L1_loss(heat_ba, self.mask_B)
 
             # 重建的损失函数（包括了Cycle损失）
             reconstruction_A = similarity_loss(x_asbts_bsatt, self.domain_A)
@@ -722,8 +731,8 @@ class UGATIT(object) :
                 identity_B1 + identity_B2+ identity_B3)
             Generator_B_cam = self.cam_weight * (cam_2 + cam_4)
 
-            Generator_A_loss = Generator_A_gan + Generator_A_cycle + Generator_A_identity + shape_sim_A# + Generator_A_cam
-            Generator_B_loss = Generator_B_gan + Generator_B_cycle + Generator_B_identity + shape_sim_B# + Generator_B_cam
+            Generator_A_loss = Generator_A_gan + Generator_A_cycle + Generator_A_identity + shape_sim_A + sim_mask_a + sim_mask_ab# + Generator_A_cam
+            Generator_B_loss = Generator_B_gan + Generator_B_cycle + Generator_B_identity + shape_sim_B + sim_mask_b + sim_mask_ba# + Generator_B_cam
 
             Discriminator_A_loss = self.adv_weight * D_ad_loss_A + Generator_A_cam + text_sim_A
             Discriminator_B_loss = self.adv_weight * D_ad_loss_B + Generator_B_cam + text_sim_B
@@ -771,6 +780,10 @@ class UGATIT(object) :
             self.shape_sim_B_loss = tf.summary.scalar("S_B_SIM", shape_sim_B)
             self.textu_sim_A_loss = tf.summary.scalar("T_A_SIM", text_sim_A)
             self.textu_sim_B_loss = tf.summary.scalar("T_B_SIM", text_sim_B)
+            self.sim_mask_a_loss = tf.summary.scalar("M_A_SIM", sim_mask_a)
+            self.sim_mask_ab_loss = tf.summary.scalar("M_AB_SIM", sim_mask_ab)
+            self.sim_mask_b_loss = tf.summary.scalar("M_B_SIM", sim_mask_b)
+            self.sim_mask_ba_loss = tf.summary.scalar("M_BA_SIM", sim_mask_ba)
             self.D_A_loss = tf.summary.scalar("D_A_loss", Discriminator_A_loss)
             self.D_B_loss = tf.summary.scalar("D_B_loss", Discriminator_B_loss)
 
@@ -784,8 +797,10 @@ class UGATIT(object) :
 
             g_summary_list = [self.G_A_loss, self.G_A_gan, self.G_A_cycle, self.G_A_identity, 
                               self.shape_sim_A_loss, self.textu_sim_A_loss,
+                              self.sim_mask_a_loss, self.sim_mask_ab_loss,
                               self.G_B_loss, self.G_B_gan, self.G_B_cycle, self.G_B_identity, 
                               self.shape_sim_B_loss, self.textu_sim_B_loss,
+                              self.sim_mask_b_loss, self.sim_mask_ba_loss
                               self.all_G_loss]
 
             g_summary_list.extend(self.rho_var)
