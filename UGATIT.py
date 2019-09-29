@@ -258,17 +258,17 @@ class UGATIT(object) :
             for i in range(self.n_res):
                 x = resblock(x, channel, scope='resblock_' + str(i))
 
-            x, cam_logit = self.CAM(x, version=cam_version, reuse=reuse)
+            cam_x, cam_logit = self.CAM(x, version=cam_version, reuse=reuse)
 
 
-            x = conv(x, channel, kernel=1, stride=1, scope='conv_1x1')
+            x = conv(cam_x, channel, kernel=1, stride=1, scope='conv_1x1')
             x = lrelu(x)
 
             # 形状特征，未来可能会直接与关键点的形状对应
             if split_shape_texture == True:
-                x_s = conv(x, 1, kernel=1, stride=1, scope='s_conv_1x1')
-                x_s = lrelu(x_shape)
-                x = [x, x_s]
+                x_s = conv(cam_x, 1, kernel=1, stride=1, scope='s_conv_1x1')
+                x_s = lrelu(x_s)
+                x = [x_s, x]
 
             if isinstance(x, list):
                 heatmap = tf.squeeze(tf.reduce_sum(tf.concat(x, -1), axis=-1))
@@ -402,7 +402,7 @@ class UGATIT(object) :
 
             channel = channel * 2
 
-            x = self.CAM(x, shuffle=False, reuse=reuse)
+            x, cam_logit = self.CAM(x, shuffle=False, reuse=reuse)
 
             #cam_x = global_avg_pooling(x)
             #cam_gap_logit, cam_x_weight = fully_connected_with_w(cam_x, sn=self.sn, scope='CAM_logit')
@@ -442,7 +442,7 @@ class UGATIT(object) :
 
             channel = channel * 2
 
-            x = self.CAM(x, shuffle=False, reuse=reuse)
+            x, cam_logit = self.CAM(x, shuffle=False, reuse=reuse)
 
             #cam_x = global_avg_pooling(x)
             #cam_gap_logit, cam_x_weight = fully_connected_with_w(cam_x, sn=self.sn, scope='CAM_logit')
@@ -566,21 +566,20 @@ class UGATIT(object) :
             """ Define Generator, Discriminator """
             # 首先定义生成器
             with tf.variable_scope('generator'):
-                [encoder_as, encoder_at], cam_a_logit, _ = self.encoder(
+                [encoder_as, encoder_at], [cam_a_gap, cam_a_gmp], _ = self.encoder(
                     self.domain_A, cam_version='softmax', split_shape_texture=True)
-                [encoder_bs, encoder_bt], cam_b_logit, _ = self.encoder(
+                [encoder_bs, encoder_bt], [cam_b_gap, cam_b_gmp], _ = self.encoder(
                     self.domain_B, cam_version='softmax', split_shape_texture=True, reuse=True)
 
-                channel = encoder_a.shape.as_list()[-1]
+                channel = encoder_at.shape.as_list()[-1]
                 num_or_size_splits = [channel] * (self.n_res * 2)
                 for i in range(self.n_downsample):
                     channel = channel // 2
                     num_or_size_splits.append(channel)
                 gamma_at, beta_at = self.MLP(
-                    encoder_a, np.sum(num_or_size_splits), split=num_or_size_splits)
-                gamma_bt, beta_bt = self.MLP(encoder_bt, 
-                                             self.ch * self.n_res * 8 + (self.ch * 2) + self.ch, 
-                                             split=num_or_size_splits, reuse=True)
+                    encoder_at, np.sum(num_or_size_splits), split=num_or_size_splits)
+                gamma_bt, beta_bt = self.MLP(
+                    encoder_bt, np.sum(num_or_size_splits), split=num_or_size_splits, reuse=True)
 
                 x_bsat = self.decoder(encoder_bs, gamma_at, beta_at, scope='decoder')
                 x_asbt = self.decoder(encoder_as, gamma_bt, beta_bt, scope='decoder', reuse=True)
@@ -591,17 +590,17 @@ class UGATIT(object) :
                 x_bsbt = self.decoder(encoder_bs, gamma_bt, beta_bt, scope='decoder', reuse=True)
 
                 """开始cycle"""
-                encoder_bsats, encoder_bsatt, cam_ba_logit, _ = self.encoder(
-                    x_bsat, reuse=True)
-                encoder_asbts, encoder_asbtt, cam_ab_logit, _ = self.encoder(
-                    x_asbt, reuse=True)
+                [encoder_bsats, encoder_bsatt], [cam_ba_gap, cam_ba_gmp], _ = self.encoder(
+                    x_bsat, cam_version='softmax', split_shape_texture=True, reuse=True)
+                [encoder_asbts, encoder_asbtt], [cam_ab_gap, cam_ab_gmp], _ = self.encoder(
+                    x_asbt, cam_version='softmax', split_shape_texture=True, reuse=True)
                 gamma_bsatt, beta_bsatt = self.MLP(
                     encoder_bsatt, 
-                    self.ch * self.n_res * 8 + (self.ch * 2) + self.ch, 
+                    np.sum(num_or_size_splits), 
                     split=num_or_size_splits, reuse=True)
                 gamma_asbtt, beta_asbtt = self.MLP(
                     encoder_asbtt, 
-                    self.ch * self.n_res * 8 + (self.ch * 2) + self.ch, 
+                    np.sum(num_or_size_splits), 
                     split=num_or_size_splits, reuse=True)
 
                 # a_shape+a_texture = domainA
@@ -633,9 +632,13 @@ class UGATIT(object) :
             # 新的cam损失函数，把b当成源域，a当成目标域，也可以反过来
             # 这里的工作并不是在区分源域和目标域，而是纯粹在做二分类
             # 未来这里应当可以根据ID的总数目进行相应的扩展。
-            cam_1 = cls_loss(source=cam_b_logit, non_source=cam_a_logit,
+            cam_1 = cls_loss(source=cam_a_gap, non_source=cam_b_gap, 
                              batch_size=self.batch_size)
-            cam_2 = cls_loss(source=cam_ab_logit, non_source=cam_ba_logit,
+            cam_2 = cls_loss(source=cam_a_gmp, non_source=cam_b_gmp,
+                             batch_size=self.batch_size)
+            cam_3 = cls_loss(source=cam_ba_gap, non_source=cam_ab_gap,
+                             batch_size=self.batch_size)
+            cam_4 = cls_loss(source=cam_ba_gmp, non_source=cam_ab_gmp,
                              batch_size=self.batch_size)
 
             # 重建的损失函数（包括了Cycle损失）
@@ -653,17 +656,30 @@ class UGATIT(object) :
             # 纹理不需要一致，而是应该能够指示人才对
             # 这样使用L2 loss感觉是有问题的，不过对于目前的训练模式应该可以接受
             # 后续应该改为使用鉴别器进行分类操作
-            texture_A = L2_loss(tf.concat([gamma_at, beta_at], axis=-1), 
-                                tf.concat([gamma_bsatt, beta_bsatt], axis=-1))
-            texture_B = L2_loss(tf.concat([gamma_bt, beta_bt], axis=-1), 
-                                tf.concat([gamma_asbtt, beta_asbtt], axis=-1))
+            # 可以设计一个triplet loss来保证为同人
+            feature_at = tf.reshape(tf.concat(gamma_at + beta_at, axis=-1), 
+                                    [self.batch_size, -1])
+            feature_att = tf.reshape(tf.concat(gamma_bsatt + beta_bsatt, axis=-1), 
+                                     [self.batch_size, -1])
+            feature_bt = tf.reshape(tf.concat(gamma_bt + beta_bt, axis=-1), 
+                                    [self.batch_size, -1])
+            feature_btt = tf.reshape(tf.concat(gamma_asbtt + beta_asbtt, axis=-1), 
+                                     [self.batch_size, -1])
+            text_sim_A = L2_loss(feature_at, feature_att)
+            text_sim_B = L2_loss(feature_bt, feature_btt)
+            # 再设计一个三元组损失，用来进一步表征是不同的人
+            t_loss_1 = Tri_loss(feature_at, feature_att, feature_bt)
+            t_loss_2 = Tri_loss(feature_at, feature_att, feature_btt)
+            t_loss_3 = Tri_loss(feature_bt, feature_btt, feature_at)
+            t_loss_4 = Tri_loss(feature_bt, feature_btt, feature_att)
+            t_loss = t_loss_1 + t_loss_2 + t_loss_3 + t_loss_4
 
             # GAN损失函数
             if self.gan_type.__contains__('wgan') or self.gan_type == 'dragan' :
-                GP_A_1, GP_CAM_BA = self.gradient_panalty(real=self.domain_A, fake=x_ba, scope="discriminator_A")
-                GP_B_1, GP_CAM_AB = self.gradient_panalty(real=self.domain_B, fake=x_ab, scope="discriminator_B")
-                GP_A_2, GP_CAM_AA = self.gradient_panalty(real=self.domain_A, fake=x_aa, scope="discriminator_A")
-                GP_B_2, GP_CAM_BB = self.gradient_panalty(real=self.domain_B, fake=x_bb, scope="discriminator_B")
+                GP_A_1, GP_CAM_BA = self.gradient_panalty(real=self.domain_A, fake=x_bsat, scope="discriminator_A")
+                GP_B_1, GP_CAM_AB = self.gradient_panalty(real=self.domain_B, fake=x_asbt, scope="discriminator_B")
+                GP_A_2, GP_CAM_AA = self.gradient_panalty(real=self.domain_A, fake=x_asat, scope="discriminator_A")
+                GP_B_2, GP_CAM_BB = self.gradient_panalty(real=self.domain_B, fake=x_bsbt, scope="discriminator_B")
             else :
                 GP_A_1, GP_CAM_BA = 0, 0
                 GP_B_1, GP_CAM_AB = 0, 0
@@ -697,27 +713,27 @@ class UGATIT(object) :
             Generator_A_cycle = self.cycle_weight * reconstruction_B
             Generator_A_identity = self.identity_weight * (
                 identity_A1 + identity_A2+ identity_A3)
-            Generator_A_cam = self.cam_weight * cam_1
+            Generator_A_cam = self.cam_weight * (cam_1 + cam_3)
 
 
             Generator_B_gan = self.adv_weight * G_ad_loss_B
             Generator_B_cycle = self.cycle_weight * reconstruction_A
             Generator_B_identity = self.identity_weight * (
                 identity_B1 + identity_B2+ identity_B3)
-            Generator_B_cam = self.cam_weight * cam_2
+            Generator_B_cam = self.cam_weight * (cam_2 + cam_4)
 
-            Generator_A_loss = Generator_A_gan + Generator_A_cycle + Generator_A_identity + Generator_A_cam
-            Generator_B_loss = Generator_B_gan + Generator_B_cycle + Generator_B_identity + Generator_B_cam
+            Generator_A_loss = Generator_A_gan + Generator_A_cycle + Generator_A_identity + text_sim_A + shape_sim_A# + Generator_A_cam
+            Generator_B_loss = Generator_B_gan + Generator_B_cycle + Generator_B_identity + text_sim_B + shape_sim_B# + Generator_B_cam
 
             Discriminator_A_loss = self.adv_weight * D_ad_loss_A
             Discriminator_B_loss = self.adv_weight * D_ad_loss_B
 
             self.Generator_loss = Generator_A_loss + Generator_B_loss + regularization_loss('generator')
-            self.Discriminator_loss = Discriminator_A_loss + Discriminator_B_loss + regularization_loss('discriminator')
+            self.Discriminator_loss = Discriminator_A_loss + Discriminator_B_loss + Generator_A_cam + Generator_B_cam + t_loss + regularization_loss('discriminator')
 
             """ Result Image """
-            self.fake_A = x_ba
-            self.fake_B = x_ab
+            self.fake_A = x_bsat
+            self.fake_B = x_asbt
 
             self.real_A = self.domain_A
             self.real_B = self.domain_B
@@ -740,7 +756,7 @@ class UGATIT(object) :
                                                tf.reduce_mean(Generator_A_cycle))
             self.G_A_identity = tf.summary.scalar("G_A_identity", 
                                                   tf.reduce_mean(Generator_A_identity))
-            self.G_A_cam = tf.summary.scalar("G_A_cam", Generator_A_cam)
+            self.G_A_cam = tf.summary.scalar("D_A_cam", Generator_A_cam)
 
             self.G_B_loss = tf.summary.scalar("G_B_loss", Generator_B_loss)
             self.G_B_gan = tf.summary.scalar("G_B_gan", Generator_B_gan)
@@ -748,8 +764,13 @@ class UGATIT(object) :
                                                tf.reduce_mean(Generator_B_cycle))
             self.G_B_identity = tf.summary.scalar("G_B_identity", 
                                                   tf.reduce_mean(Generator_B_identity))
-            self.G_B_cam = tf.summary.scalar("G_B_cam", Generator_B_cam)
+            self.G_B_cam = tf.summary.scalar("D_B_cam", Generator_B_cam)
 
+            self.tri_loss = tf.summary.scalar("Triplet Loss", t_loss)
+            self.shape_sim_A_loss = tf.summary.scalar("S_A_SIM", shape_sim_A)
+            self.shape_sim_B_loss = tf.summary.scalar("S_B_SIM", shape_sim_B)
+            self.textu_sim_A_loss = tf.summary.scalar("T_A_SIM", text_sim_A)
+            self.textu_sim_B_loss = tf.summary.scalar("T_B_SIM", text_sim_B)
             self.D_A_loss = tf.summary.scalar("D_A_loss", Discriminator_A_loss)
             self.D_B_loss = tf.summary.scalar("D_B_loss", Discriminator_B_loss)
 
@@ -761,31 +782,34 @@ class UGATIT(object) :
                     self.rho_var.append(tf.summary.scalar(var.name + "_max", tf.reduce_max(var)))
                     self.rho_var.append(tf.summary.scalar(var.name + "_mean", tf.reduce_mean(var)))
 
-            g_summary_list = [self.G_A_loss, self.G_A_gan, self.G_A_cycle, self.G_A_identity, self.G_A_cam,
-                              self.G_B_loss, self.G_B_gan, self.G_B_cycle, self.G_B_identity, self.G_B_cam,
+            g_summary_list = [self.G_A_loss, self.G_A_gan, self.G_A_cycle, self.G_A_identity, 
+                              self.shape_sim_A_loss, self.textu_sim_A_loss,
+                              self.G_B_loss, self.G_B_gan, self.G_B_cycle, self.G_B_identity, 
+                              self.shape_sim_B_loss, self.textu_sim_B_loss,
                               self.all_G_loss]
 
             g_summary_list.extend(self.rho_var)
-            d_summary_list = [self.D_A_loss, self.D_B_loss, self.all_D_loss]
+            d_summary_list = [self.D_A_loss, self.D_B_loss, self.G_A_cam, self.G_B_cam, 
+                              self.tri_loss, self.all_D_loss]
 
             self.G_loss = tf.summary.merge(g_summary_list)
             self.D_loss = tf.summary.merge(d_summary_list)
 
         else :
             """ Test """
-            #self.test_domain_A = tf.placeholder(tf.float32, [1, self.img_size, self.img_size, self.img_ch], name='test_domain_A')
-            #self.test_domain_B = tf.placeholder(tf.float32, [1, self.img_size, self.img_size, self.img_ch], name='test_domain_B')
+            self.test_domain_A = tf.placeholder(tf.float32, [1, self.img_size, self.img_size, self.img_ch], name='test_domain_A')
+            self.test_domain_B = tf.placeholder(tf.float32, [1, self.img_size, self.img_size, self.img_ch], name='test_domain_B')
 
-            #encoder_a, cam_a_logit, _ = self.encoder(self.test_domain_A)
-            #encoder_b, cam_b_logit, _ = self.encoder(self.test_domain_B, reuse=True)
-            #num_or_size_splits = [self.ch * 4] * (self.n_res * 2)
-            #num_or_size_splits.extend([self.ch * 2, self.ch])
-            #gamma_a, beta_a = self.MLP(self.ch * self.n_res * 8 + (self.ch * 2) + self.ch, 
-            #                           split=num_or_size_splits)(encoder_a)
-            #gamma_b, beta_b = self.MLP(self.ch * self.n_res * 8 + (self.ch * 2) + self.ch, 
-            #                           split=num_or_size_splits, reuse=True)(encoder_b)
-            #self.test_fake_A = self.decoder(gamma_b, beta_b, scope='decoder_a')(encoder_b)
-            #self.test_fake_B = self.decoder(gamma_a, beta_a, scope='decoder_b')(encoder_a)
+            encoder_a, cam_a_logit, _ = self.encoder(self.test_domain_A)
+            encoder_b, cam_b_logit, _ = self.encoder(self.test_domain_B, reuse=True)
+            num_or_size_splits = [self.ch * 4] * (self.n_res * 2)
+            num_or_size_splits.extend([self.ch * 2, self.ch])
+            gamma_a, beta_a = self.MLP(self.ch * self.n_res * 8 + (self.ch * 2) + self.ch, 
+                                       split=num_or_size_splits)(encoder_a)
+            gamma_b, beta_b = self.MLP(self.ch * self.n_res * 8 + (self.ch * 2) + self.ch, 
+                                       split=num_or_size_splits, reuse=True)(encoder_b)
+            self.test_fake_A = self.decoder(gamma_b, beta_b, scope='decoder_a')(encoder_b)
+            self.test_fake_B = self.decoder(gamma_a, beta_a, scope='decoder_b')(encoder_a)
 
     def build_model_v2(self):
         if self.phase == 'train':

@@ -290,8 +290,27 @@ def L1_loss(x, y):
     return loss
 
 def L2_loss(x, y):
-    loss = tf.reduce_mean(tf.square(x - y))
-    return loss
+    # 需要L2 loss吗？因为比较是否同人的特征一般通过余弦距离
+    # 所以是否只需要优化余弦距离就可以？
+    #loss1 = tf.losses.mean_squared_error(x, y) 
+    x = tf.math.l2_normalize(x, axis=-1)
+    y = tf.math.l2_normalize(y, axis=-1)
+    loss2 = tf.reduce_mean(tf.math.acos(tf.reduce_sum(x * y, 1, keepdims=True)))
+    #loss2 = tf.losses.cosine_distance(x, y, axis=-1)
+
+    return loss2# + loss1
+
+def Tri_loss(a, p, n):
+    a = tf.math.l2_normalize(a, axis=-1)
+    p = tf.math.l2_normalize(p, axis=-1)
+    n = tf.math.l2_normalize(n, axis=-1)
+
+    ap = tf.math.acos(tf.reduce_sum(a * p, 1, keepdims=True))
+    an = tf.math.acos(tf.reduce_sum(a * n, 1, keepdims=True))
+
+    triplet_loss = tf.reduce_mean(tf.nn.relu(ap - an + 0.3))
+
+    return triplet_loss
 
 def dssim(kernel_size=11, k1=0.01, k2=0.03, max_value=1.0):
     # 该函数是使用纯粹的keras语言重写的tf.image.ssim函数，

@@ -105,6 +105,8 @@ def main():
         # build graph
         if args.model_version == 'v2':
             gan.build_model_v2()
+        elif args.model_version == 'v3':
+            gan.build_model_v3()
         else:
             #print('model name: ', args.model_name)
             gan.build_model()
