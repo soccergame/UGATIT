@@ -290,15 +290,20 @@ def L1_loss(x, y):
     return loss
 
 def L2_loss(x, y):
+    loss = tf.losses.mean_squared_error(x, y)
+    return loss
+
+def Cosine_loss(x, y):
     # 需要L2 loss吗？因为比较是否同人的特征一般通过余弦距离
     # 所以是否只需要优化余弦距离就可以？
     #loss1 = tf.losses.mean_squared_error(x, y) 
     x = tf.math.l2_normalize(x, axis=-1)
     y = tf.math.l2_normalize(y, axis=-1)
-    loss2 = tf.reduce_mean(tf.math.acos(tf.reduce_sum(x * y, 1, keepdims=True)))
+    loss = 5 * tf.reduce_mean((1 - tf.reduce_sum(x * y, 1, keepdims=True)))
+    #loss2 = tf.reduce_mean(tf.math.acos(tf.reduce_sum(x * y, 1, keepdims=True)))
     #loss2 = tf.losses.cosine_distance(x, y, axis=-1)
 
-    return loss2# + loss1
+    return loss# + loss1
 
 def Tri_loss(a, p, n):
     a = tf.math.l2_normalize(a, axis=-1)

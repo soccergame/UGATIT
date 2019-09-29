@@ -651,8 +651,8 @@ class UGATIT(object) :
             identity_A3 = similarity_loss(x_asbts_at, self.domain_A)
             identity_B3 = similarity_loss(x_bsats_bt, self.domain_B)
             # 形状应当是非常相似的
-            shape_sim_A = L1_loss(encoder_as, encoder_asbts)
-            shape_sim_B = L1_loss(encoder_bs, encoder_bsats)
+            shape_sim_A = L1_loss(encoder_as, encoder_asbts) + L2_loss(encoder_as, encoder_asbts)
+            shape_sim_B = L1_loss(encoder_bs, encoder_bsats) + L2_loss(encoder_bs, encoder_bsats)
             # 纹理不需要一致，而是应该能够指示人才对
             # 这样使用L2 loss感觉是有问题的，不过对于目前的训练模式应该可以接受
             # 后续应该改为使用鉴别器进行分类操作
@@ -665,8 +665,8 @@ class UGATIT(object) :
                                     [self.batch_size, -1])
             feature_btt = tf.reshape(tf.concat(gamma_asbtt + beta_asbtt, axis=-1), 
                                      [self.batch_size, -1])
-            text_sim_A = L2_loss(feature_at, feature_att)
-            text_sim_B = L2_loss(feature_bt, feature_btt)
+            text_sim_A = L2_loss(feature_at, feature_att) + Cosine_loss(feature_at, feature_att)
+            text_sim_B = L2_loss(feature_bt, feature_btt) + Cosine_loss(feature_bt, feature_btt)
             # 再设计一个三元组损失，用来进一步表征是不同的人
             t_loss_1 = Tri_loss(feature_at, feature_att, feature_bt)
             t_loss_2 = Tri_loss(feature_at, feature_att, feature_btt)
@@ -722,14 +722,14 @@ class UGATIT(object) :
                 identity_B1 + identity_B2+ identity_B3)
             Generator_B_cam = self.cam_weight * (cam_2 + cam_4)
 
-            Generator_A_loss = Generator_A_gan + Generator_A_cycle + Generator_A_identity + text_sim_A + shape_sim_A# + Generator_A_cam
-            Generator_B_loss = Generator_B_gan + Generator_B_cycle + Generator_B_identity + text_sim_B + shape_sim_B# + Generator_B_cam
+            Generator_A_loss = Generator_A_gan + Generator_A_cycle + Generator_A_identity + shape_sim_A# + Generator_A_cam
+            Generator_B_loss = Generator_B_gan + Generator_B_cycle + Generator_B_identity + shape_sim_B# + Generator_B_cam
 
-            Discriminator_A_loss = self.adv_weight * D_ad_loss_A
-            Discriminator_B_loss = self.adv_weight * D_ad_loss_B
+            Discriminator_A_loss = self.adv_weight * D_ad_loss_A + Generator_A_cam + text_sim_A
+            Discriminator_B_loss = self.adv_weight * D_ad_loss_B + Generator_B_cam + text_sim_B
 
             self.Generator_loss = Generator_A_loss + Generator_B_loss + regularization_loss('generator')
-            self.Discriminator_loss = Discriminator_A_loss + Discriminator_B_loss + Generator_A_cam + Generator_B_cam + t_loss + regularization_loss('discriminator')
+            self.Discriminator_loss = Discriminator_A_loss + Discriminator_B_loss + t_loss + regularization_loss('discriminator')
 
             """ Result Image """
             self.fake_A = x_bsat
