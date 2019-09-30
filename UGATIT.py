@@ -2,6 +2,7 @@ from ops import *
 from utils import *
 from glob import glob
 import time
+import os
 from tensorflow.contrib.data import prefetch_to_device, shuffle_and_repeat, map_and_batch
 import numpy as np
 
@@ -1080,8 +1081,8 @@ class UGATIT(object) :
             trainA_iterator = trainA.make_one_shot_iterator()
             trainB_iterator = trainB.make_one_shot_iterator()
 
-            self.domain_A = trainA_iterator.get_next()
-            self.domain_B = trainB_iterator.get_next()
+            self.domain_A, _ = trainA_iterator.get_next()
+            self.domain_B, _ = trainB_iterator.get_next()
 
             """ Define Generator, Discriminator """
             # 第一步，先将real_a送入生成器，生成仿照b风格的图片
@@ -1344,10 +1345,14 @@ class UGATIT(object) :
         else :
             sn = ''
 
-        return "{}_{}_{}_{}_{}_{}_{}_{}_{}_{}{}{}".format(self.model_name, self.dataset_name,
-                                                         self.gan_type, n_res, n_dis,
-                                                         self.n_critic,
-                                                         self.adv_weight, self.cycle_weight, self.identity_weight, self.cam_weight, sn, smoothing)
+        return "{}_{}_{}_{}_{}_{}_{}_{}_{}_{}{}{}".format(self.model_name, 
+                                                          os.path.basename(self.dataset_name),
+                                                          self.gan_type, n_res, n_dis,
+                                                          self.n_critic,
+                                                          self.adv_weight, 
+                                                          self.cycle_weight, 
+                                                          self.identity_weight, 
+                                                          self.cam_weight, sn, smoothing)
 
     def save(self, checkpoint_dir, step):
         checkpoint_dir = os.path.join(checkpoint_dir, self.model_dir)

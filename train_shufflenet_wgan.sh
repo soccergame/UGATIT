@@ -6,9 +6,10 @@ python main.py \
     --log_dir=logs_v1 \
     --sample_dir=results_v1 \
     --gpus=0 \
-    --n_downsample=3 \
-    --batch_size=4 \
-    --ch=16 \
-    --iteration=26000 \
-    --dataset=generate_teacher_data \
+    --n_downsample=4 \
+    --batch_size=1 \
+    --img_size=512 \
+    --ch=32 \
+    --iteration=28000 \
+    --dataset=/search/datasets/generate_teacher \
     --result_dir=results_v1
