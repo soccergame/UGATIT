@@ -63,8 +63,8 @@ class UGATIT(object) :
         check_folder(self.sample_dir)
 
         # self.trainA, self.trainB = prepare_data(dataset_name=self.dataset_name, size=self.img_size
-        self.trainA_dataset = glob('./dataset/{}/*.*'.format(self.dataset_name + '/trainA'))
-        self.trainB_dataset = glob('./dataset/{}/*.*'.format(self.dataset_name + '/trainB'))
+        self.trainA_dataset = glob('{}/*.*'.format(self.dataset_name + '/trainA'))
+        self.trainB_dataset = glob('{}/*.*'.format(self.dataset_name + '/trainB'))
         self.dataset_num = max(len(self.trainA_dataset), len(self.trainB_dataset))
 
         print()
