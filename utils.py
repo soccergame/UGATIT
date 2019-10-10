@@ -4,6 +4,8 @@ import cv2
 import os, random
 import numpy as np
 
+from cv2 import cv2
+
 class ImageData:
 
     def __init__(self, load_size, channels, augment_flag):

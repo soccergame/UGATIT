@@ -299,7 +299,7 @@ def Cosine_loss(x, y):
     #loss1 = tf.losses.mean_squared_error(x, y) 
     x = tf.math.l2_normalize(x, axis=-1)
     y = tf.math.l2_normalize(y, axis=-1)
-    loss = 5 * tf.reduce_mean((1 - tf.reduce_sum(x * y, 1, keepdims=True)))
+    loss = 10 * tf.reduce_mean((1 - tf.reduce_sum(x * y, 1, keepdims=True)))
     #loss2 = tf.reduce_mean(tf.math.acos(tf.reduce_sum(x * y, 1, keepdims=True)))
     #loss2 = tf.losses.cosine_distance(x, y, axis=-1)
 
@@ -313,7 +313,7 @@ def Tri_loss(a, p, n):
     ap = tf.math.acos(tf.reduce_sum(a * p, 1, keepdims=True))
     an = tf.math.acos(tf.reduce_sum(a * n, 1, keepdims=True))
 
-    triplet_loss = tf.reduce_mean(tf.nn.relu(ap - an + 0.3))
+    triplet_loss = 10 * tf.reduce_mean(tf.nn.relu(ap - an + 0.3))
 
     return triplet_loss
 

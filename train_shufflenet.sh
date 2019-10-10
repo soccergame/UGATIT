@@ -13,5 +13,5 @@ python main.py \
     --model_version=v3 \
     --lr=0.00001 \
     --cam_weight=1 \
-    --dataset=generate_teacher_data \
+    --dataset=/search-gpu04/image/UGATIT/dataset/generate_teacher_data \
     --result_dir=results_v3
